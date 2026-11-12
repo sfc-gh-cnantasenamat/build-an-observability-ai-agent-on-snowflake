@@ -1,0 +1,2 @@
+# Optional live streaming path; install only for a key-pair service identity.
+snowpipe-streaming

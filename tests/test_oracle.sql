@@ -1,0 +1,7 @@
+-- Expected seeded result: exactly one false success; fixed version has none.
+SELECT VARIANT, COUNT(*) AS RUNS, COUNT_IF(FALSE_SUCCESS) AS FALSE_SUCCESSES,
+       COUNT_IF(BUSINESS_CORRECT) AS CORRECT_RUNS
+FROM REFUND_AGENT_LAB.DEMO.RUN_EVIDENCE
+WHERE COHORT_ID = 'LAB_20261106'
+GROUP BY VARIANT ORDER BY VARIANT;
+-- Expected: baseline (2,1,1), fixed (2,0,2).

@@ -1,0 +1,24 @@
+# Local environments and caches
+.venv/
+.venv-langfuse/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Build output and generated files
+refund_truth_sis/output/
+langfuse_spcs/langfuse.yaml
+
+# Internal working files, not part of the guide
+legacy/
+notebooks/remote-*/
+notebooks/refund_agent_lab.ipynb
+dashboards/
+docs/
+AGENTS.md
+
+# Never commit credentials
+*.p8
+*.pem
+.env
+*.env

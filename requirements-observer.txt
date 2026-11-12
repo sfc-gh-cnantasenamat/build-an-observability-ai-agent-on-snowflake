@@ -1,0 +1,16 @@
+# Install into a dedicated virtual environment; do not mutate the global CoCo CLI environment.
+# Pin the TruLens distribution family together to avoid mixing 2.7 and 2.16 APIs.
+langgraph==1.2.20
+langchain-snowflake==0.2.3
+langfuse==5.2.0
+snowflake-snowpark-python==1.56.0
+trulens-core==2.7.1
+trulens-feedback==2.7.1
+trulens-otel-semconv==2.7.1
+trulens-apps-langchain==2.7.1
+trulens-apps-langgraph==2.7.1
+trulens-connectors-snowflake==2.7.1
+snowflake-connector-python==3.18.1
+SQLAlchemy==2.0.49
+# TruLens 2.7.1 client-side metrics fail on pandas 3 ("Incompatible indexer with Series").
+pandas>=2.2,<3

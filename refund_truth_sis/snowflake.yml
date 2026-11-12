@@ -1,0 +1,32 @@
+definition_version: 2
+# Override per account: snow streamlit deploy ... --env warehouse=<your warehouse>
+env:
+  warehouse: COMPUTE_WH
+entities:
+  refund_truth_sis:
+    type: streamlit
+    identifier:
+      name: REFUND_TRUTH_LAB
+      database: REFUND_AGENT_LAB
+      schema: DEMO
+    query_warehouse: <% ctx.env.warehouse %>
+    runtime_name: SYSTEM$ST_CONTAINER_RUNTIME_PY3_11
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    external_access_integrations:
+      - PYPI_ACCESS_INTEGRATION
+      - REFUND_LAB_APP_EAI
+    secrets:
+      langfuse_public_key: REFUND_AGENT_LAB.LANGFUSE.LF_INIT_PUBLIC_KEY
+      langfuse_secret_key: REFUND_AGENT_LAB.LANGFUSE.LF_INIT_SECRET_KEY
+      langfuse_host: REFUND_AGENT_LAB.LANGFUSE.LANGFUSE_HOST
+    main_file: streamlit_app.py
+    artifacts:
+      - streamlit_app.py
+      - pyproject.toml
+      - refund_agent/__init__.py
+      - refund_agent/config.py
+      - refund_agent/events.py
+      - refund_agent/agents.py
+      - refund_agent/lab.py
+      - refund_agent/observers.py
+      - .streamlit/config.toml
