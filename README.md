@@ -1,4 +1,4 @@
-# Refund agent business-truth lab
+# Build an Observability AI Agent on Snowflake
 
 Three LangGraph refund agents answer the same synthetic refund requests. Each looks good on at least one usual signal: cost, latency, its own reported success, or an LLM judge. Only Snowflake, which joins each run to orders, policies, payments and the ledger, shows which agent actually did the right thing with the money. Nothing touches a real payment system.
 
