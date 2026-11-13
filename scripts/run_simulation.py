@@ -1,10 +1,16 @@
-"""Live end-to-end simulation: orders, all agents, both observers, SqlSink.
+"""Live end-to-end simulation: orders, all agents, both observers, Snowpipe Streaming.
 
-Usage: python scripts/run_simulation.py [orders] [requests] [--scenarios] [--no-trulens] [--no-langfuse]
+Usage: python scripts/run_simulation.py [orders] [requests] [--scenarios] [--sql]
+                                        [--no-trulens] [--no-langfuse]
 ``--scenarios`` uses the fixed scenario set (lab.SCENARIOS) instead of random orders.
-Prints the simulation ID, observer status and a per-agent summary from RUN_EVIDENCE.
+Run events are written with Snowpipe Streaming as REFUND_LAB_STREAMER (key at
+~/.snowflake/keys/refund_lab_streamer.p8, see sql/streaming_setup.sql); ``--sql`` uses
+ordinary inserts instead. The leaderboard (sql/leaderboard.sql) then runs on the
+interactive warehouse REFUND_LAB_IWH, which is suspended afterwards.
+Prints the simulation ID, observer status, the leaderboard and which warehouse ran it.
 """
 import logging
+import os
 import sys
 import time
 import uuid
@@ -13,6 +19,8 @@ from pathlib import Path
 
 warnings.filterwarnings("ignore")
 logging.disable(logging.WARNING)
+# The Snowpipe Streaming SDK logs every flush at INFO; keep the run output readable.
+os.environ.setdefault("SS_LOG_LEVEL", "warn")
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from refund_agent import config
 
@@ -55,8 +63,8 @@ if "--no-langfuse" not in sys.argv:
                                 token)  # native Langfuse judges
     observers.append(langfuse)
 
-sink = (StreamingSink(cohort, str(Path.home() / ".snowflake/keys/refund_lab_streamer.p8"))
-        if "--stream" in sys.argv else SqlSink(conn))
+sink = (SqlSink(conn) if "--sql" in sys.argv
+        else StreamingSink(cohort, str(Path.home() / ".snowflake/keys/refund_lab_streamer.p8")))
 print("simulation", cohort, "scenario set:" if scenarios else "random:",
       f"{orders} orders, {requests} requests,", "sink:", sink.name,
       "observers:", [o.name for o in observers], flush=True)
@@ -87,13 +95,21 @@ if trulens:
               flush=True)
 
 cur = conn.cursor()
-cur.execute("""
-SELECT VARIANT, COUNT(*) runs, COUNT_IF(BUSINESS_CORRECT) correct,
-       COUNT_IF(FALSE_SUCCESS) false_success, COUNT_IF(CUSTOMER_MISINFORMED) misinformed,
-       SUM(MONEY_AT_RISK_CENTS) risk_cents, ROUND(SUM(MODEL_COST_CREDITS) * 1e6) microcredits,
-       ROUND(MEDIAN(AGENT_LATENCY_MS)) p50_ms, LISTAGG(DISTINCT ROOT_CAUSE, ',') causes
-FROM REFUND_AGENT_LAB.DEMO.RUN_EVIDENCE WHERE COHORT_ID = ? GROUP BY 1 ORDER BY 1""", (cohort,))
-print([d[0] for d in cur.description])
-for row in cur.fetchall():
-    print(row)
+leaderboard = (Path(__file__).resolve().parents[1] / "sql" / "leaderboard.sql").read_text()
+try:
+    cur.execute("USE WAREHOUSE REFUND_LAB_IWH")
+    started = time.perf_counter()
+    cur.execute(leaderboard.rstrip().rstrip(";"), (cohort,))
+    elapsed, qid = time.perf_counter() - started, cur.sfqid
+    print("leaderboard", [d[0] for d in cur.description])
+    for row in cur.fetchall():
+        print(row)
+    cur.execute(f"USE WAREHOUSE {config.WAREHOUSE}")
+    cur.execute("SELECT WAREHOUSE_NAME FROM TABLE(INFORMATION_SCHEMA.QUERY_HISTORY_BY_SESSION()) "
+                "WHERE QUERY_ID = ?", (qid,))
+    ran_on = cur.fetchone()
+    print(f"leaderboard ran on {ran_on[0] if ran_on else 'unknown'} in {elapsed:.1f}s")
+finally:
+    # An interactive warehouse can't auto-suspend in under 24 hours.
+    cur.execute("ALTER WAREHOUSE REFUND_LAB_IWH SUSPEND")
 print("cohort", cohort)

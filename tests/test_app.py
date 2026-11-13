@@ -45,6 +45,30 @@ def run_rows():
     return pd.DataFrame(rows)
 
 
+class FakeCursor:
+    def __init__(self, state, log):
+        self.state, self.log, self.description = state, log, None
+
+    def execute(self, sql):
+        self.log.append(sql)
+        if sql.startswith("SHOW WAREHOUSES"):
+            self.description = [("name",), ("state",)]
+            self._row = ("REFUND_LAB_IWH", self.state)
+        elif "CURRENT_WAREHOUSE" in sql:
+            self._row = ("STANDARD_WH",)
+
+    def fetchone(self):
+        return self._row
+
+
+class FakeRaw:
+    def __init__(self, state):
+        self.state, self.log = state, []
+
+    def cursor(self):
+        return FakeCursor(self.state, self.log)
+
+
 class FakeConnection:
     raw_connection = object()
 
@@ -104,6 +128,28 @@ class AppTests(unittest.TestCase):
             self.assertEqual(len(at.dataframe[1].value), 2)
             self.assertTrue(any("Matches business truth" in s.value for s in at.success))
             self.assertEqual(sum("Wrong" in e.value for e in at.error), 2)
+
+    def test_leaderboard_uses_running_interactive_warehouse(self):
+        fake = FakeConnection()
+        fake.raw_connection = FakeRaw("STARTED")
+        with mock.patch("streamlit.connection", return_value=fake):
+            at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=60)
+            at.run()
+        self.assertFalse(at.exception, at.exception)
+        self.assertIn("USE WAREHOUSE REFUND_LAB_IWH", fake.raw_connection.log)
+        self.assertEqual(fake.raw_connection.log[-1], "USE WAREHOUSE STANDARD_WH")
+        self.assertFalse(any("RESUME" in sql for sql in fake.raw_connection.log))
+        self.assertTrue(any("served by the interactive warehouse" in c.value for c in at.caption))
+
+    def test_suspended_interactive_warehouse_is_not_resumed(self):
+        fake = FakeConnection()
+        fake.raw_connection = FakeRaw("SUSPENDED")
+        with mock.patch("streamlit.connection", return_value=fake):
+            at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=60)
+            at.run()
+        self.assertFalse(at.exception, at.exception)
+        self.assertFalse(any(sql.startswith("USE WAREHOUSE") for sql in fake.raw_connection.log))
+        self.assertTrue(any("served by the standard warehouse" in c.value for c in at.caption))
 
 
 if __name__ == "__main__":

@@ -27,6 +27,13 @@ python3.11 -m venv .venv
 .venv/bin/python scripts/run_simulation.py --scenarios    # live run: fixed scenario set, both observers
 ```
 
+The live run is the whole workflow in one command:
+1. It writes runs, trace events and model calls with **Snowpipe Streaming**, as the key-pair service user `REFUND_LAB_STREAMER`. Create it first with `sql/streaming_setup.sql`; the guide shows how to generate its key at `~/.snowflake/keys/refund_lab_streamer.p8`. Add `--sql` to use ordinary inserts instead.
+2. TruLens and Langfuse trace and judge the same runs, and the Langfuse export copies its scores into Snowflake.
+3. It runs the leaderboard (`sql/leaderboard.sql`) on the **interactive warehouse** `REFUND_LAB_IWH`, reports which warehouse served it, and suspends the warehouse again.
+
+All three write to and read from **standard Snowflake tables**; nothing is copied into a separate store.
+
 `.refund_lab.env` is gitignored. The code checks that it's connected to `REFUND_LAB_ACCOUNT` before writing anything. SQL scripts that need account values take `snow sql -D` variables, listed in each file's header.
 
 ## How it fits together
@@ -39,9 +46,9 @@ python3.11 -m venv .venv
   - **TruLens** writes to Snowflake AI Observability, which computes `answer_relevance` and `groundedness` server-side. Scores are read through the `TRULENS_SCORES` view.
   - **Langfuse** is self-hosted on SPCS (see `langfuse_spcs/README.md`) and receives the same runs through LangChain's `CallbackHandler`. Its native LLM-as-a-judge evaluators score `answer_relevance` and `groundedness` on a `judge_input` step that carries the same facts TruLens sees. `LangfuseObserver.export` copies traces, Langfuse's cost per call and scores into `LANGFUSE_TRACES` and `LANGFUSE_SCORES`.
   - **Judges and cost:** both tools judge with `openai-gpt-5-mini` on Cortex. Langfuse reaches Cortex through its OpenAI-compatible REST API with a scoped short-lived token (`langfuse_spcs/judge_access.sql`, `scripts/langfuse_judge_setup.py`, `scripts/langfuse_llm_connection.py`, `scripts/langfuse_native_evals.py`). Langfuse computes cost from Cortex prices registered by `scripts/langfuse_models.py`; TruLens records a cost span for each model call.
-- **Leaderboard** (`sql/leaderboard.sql`): runs on the interactive warehouse `REFUND_LAB_IWH`, falling back to `REFUND_LAB_WAREHOUSE`.
+- **Leaderboard** (`sql/leaderboard.sql`): runs on the interactive warehouse `REFUND_LAB_IWH` straight against the standard tables (no copies), with `REFUND_LAB_WAREHOUSE` as the fallback for statements over 5 seconds. The TruLens scores are joined separately on the standard warehouse, because they come from the AI Observability event table.
 - **Judge agreement** (`sql/judge_agreement.sql`): the `JUDGE_AGREEMENT` view measures how well each judge agrees with `BUSINESS_CORRECT`, using the same statistics as Langfuse Score Analytics: Pearson and Spearman correlation, MAE and RMSE on the raw score, and, counting a score of 0.5 or more as a pass, a confusion matrix, agreement, Cohen's kappa and F1. `business_correct` is also copied into both tools as a reference score, so you can compare it there too (the TruLens metric needs `trulens-feedback` and pandas below 3).
-- **App** (`refund_truth_sis/`): Streamlit in Snowflake on container runtime, with three sections: Pick a winner (business truth hidden until revealed), Refund requests and Investigate.
+- **App** (`refund_truth_sis/`): Streamlit in Snowflake on container runtime, with three sections: Pick a winner (business truth hidden until revealed), Refund requests and Investigate. It writes with ordinary inserts, so the streamer's private key never goes into the app. It reads the leaderboard on `REFUND_LAB_IWH` when that warehouse is already running and says which warehouse served it; it never resumes the interactive warehouse itself.
 - **Notebook** (`notebooks/refund_agent_lab_v2.ipynb`): the same steps as the guide, plus a TruLens vs Langfuse comparison and cleanup.
 
 ## Example results
@@ -91,7 +98,7 @@ Cost is estimated from token counts at the published Cortex rates.
 ## Running costs
 
 - Langfuse runs on a compute pool. Resume it before a live run with `CALL REFUND_AGENT_LAB.LANGFUSE.MANAGE_LANGFUSE('resume','http://localhost:3000')`; an idle task suspends it after 30 minutes without traffic.
-- The interactive warehouse can't auto-suspend in under 24 hours, so suspend it after each session with `ALTER WAREHOUSE REFUND_LAB_IWH SUSPEND`.
+- The interactive warehouse can't auto-suspend in under 24 hours, and each resume starts a new one-hour minimum charge. `scripts/run_simulation.py` and the notebook suspend it when they finish; if you resume it any other way, suspend it with `ALTER WAREHOUSE REFUND_LAB_IWH SUSPEND`.
 - The guide's Clean Up section drops everything the lab creates.
 
 ## Deploying the app

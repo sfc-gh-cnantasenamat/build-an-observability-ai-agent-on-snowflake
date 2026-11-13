@@ -96,6 +96,34 @@ def frame(sql, *params):
     return result
 
 
+IWH = "REFUND_LAB_IWH"
+
+
+def leaderboard_frames(cohort):
+    """Read the leaderboard inputs on the interactive warehouse when it's already running.
+
+    Each resume of an interactive warehouse starts a new one-hour minimum charge, so the app
+    never resumes it: run the notebook or scripts/run_simulation.py to start it. Writes and
+    the TruLens read (AI Observability event table) stay on the standard warehouse.
+    """
+    try:
+        cursor = connection.raw_connection.cursor()
+        cursor.execute(f"SHOW WAREHOUSES LIKE '{IWH}'")
+        columns = [d[0].lower() for d in cursor.description]
+        state = dict(zip(columns, cursor.fetchone() or ())).get("state")
+    except Exception:
+        state = None
+    if state != "STARTED":
+        return frame(RUNS_SQL, cohort), frame(LANGFUSE_SQL, cohort), "standard"
+    cursor.execute("SELECT CURRENT_WAREHOUSE()")
+    home = cursor.fetchone()[0]
+    try:
+        cursor.execute(f"USE WAREHOUSE {IWH}")
+        return frame(RUNS_SQL, cohort), frame(LANGFUSE_SQL, cohort), "interactive"
+    finally:
+        cursor.execute(f"USE WAREHOUSE {home}")
+
+
 @st.cache_resource
 def agent_graphs():
     from langchain_snowflake import ChatSnowflake
@@ -226,9 +254,8 @@ if not cohort:
     st.stop()
 
 try:
-    runs = frame(RUNS_SQL, cohort)
+    runs, langfuse, served_by = leaderboard_frames(cohort)
     trulens = frame(TRULENS_SQL, f"{cohort}_")
-    langfuse = frame(LANGFUSE_SQL, cohort)
 except Exception as error:
     st.error(f"Could not load the evidence: {error}")
     st.stop()
@@ -248,6 +275,9 @@ board_runs = runs.merge(scores.drop(columns="variant"), on="run_id", how="left")
 st.header("1. Pick a winner")
 st.caption("These are the signals a team usually has: cost, speed, the agent's own report "
            "and two LLM judges. Pick the agent you'd ship before revealing business truth.")
+st.caption(f"Leaderboard served by the interactive warehouse {IWH}." if served_by == "interactive"
+           else f"Leaderboard served by the standard warehouse ({IWH} is suspended; the "
+                "notebook and scripts/run_simulation.py start it).")
 
 
 def leaderboard(df):
