@@ -1,8 +1,9 @@
 """Live end-to-end simulation: orders, all agents, both observers, Snowpipe Streaming.
 
-Usage: python scripts/run_simulation.py [orders] [requests] [--scenarios] [--sql]
+Usage: python scripts/run_simulation.py [orders] [requests] [--scenarios | --eval] [--sql]
                                         [--no-trulens] [--no-langfuse]
 ``--scenarios`` uses the fixed scenario set (lab.SCENARIOS) instead of random orders.
+``--eval`` uses the judge-alignment eval set (lab.eval_set: 100 requests per agent).
 Run events are written with Snowpipe Streaming as REFUND_LAB_STREAMER (key at
 ~/.snowflake/keys/refund_lab_streamer.p8, see sql/streaming_setup.sql); ``--sql`` uses
 ordinary inserts instead. The leaderboard (sql/leaderboard.sql) then runs on the
@@ -29,7 +30,8 @@ from langchain_snowflake import ChatSnowflake
 from snowflake.snowpark import Session
 
 from refund_agent.agents import build_agent
-from refund_agent.lab import AGENT_NAMES, SCENARIOS, SqlSink, StreamingSink, simulate
+from refund_agent.lab import (AGENT_NAMES, EVAL_REQUESTS, SCENARIOS, SqlSink, StreamingSink,
+                              eval_set, simulate)
 from refund_agent.observers import TRULENS_METRICS, LangfuseObserver, TruLensObserver
 
 HOST = config.LANGFUSE_HOST
@@ -37,9 +39,12 @@ args = [a for a in sys.argv[1:] if not a.startswith("--")]
 orders = int(args[0]) if args else 6
 requests = int(args[1]) if len(args) > 1 else 5
 scenarios = "--scenarios" in sys.argv
+evalset = "--eval" in sys.argv
 if scenarios:
     orders, requests = len(SCENARIOS), len(SCENARIOS) + 1
 cohort = "APP_" + uuid.uuid4().hex[:16].upper()
+if evalset:
+    orders, requests = len(eval_set(cohort)[0]), EVAL_REQUESTS
 
 conn = snowflake.connector.connect(
     connection_name=config.CONNECTION, paramstyle="qmark",
@@ -65,12 +70,13 @@ if "--no-langfuse" not in sys.argv:
 
 sink = (SqlSink(conn) if "--sql" in sys.argv
         else StreamingSink(cohort, str(Path.home() / ".snowflake/keys/refund_lab_streamer.p8")))
-print("simulation", cohort, "scenario set:" if scenarios else "random:",
+print("simulation", cohort,
+      "eval set:" if evalset else "scenario set:" if scenarios else "random:",
       f"{orders} orders, {requests} requests,", "sink:", sink.name,
       "observers:", [o.name for o in observers], flush=True)
 started = time.perf_counter()
 runs = simulate(conn, cohort, orders, requests, graphs, sink, observers=observers,
-                scenarios=scenarios,
+                scenarios=scenarios, evalset=evalset,
                 progress=lambda a, i, n: print(f"  {a} request {i}/{n}", flush=True))
 print(f"runs written: {len(runs)} in {time.perf_counter() - started:.0f}s", flush=True)
 if sink.name == "streaming":

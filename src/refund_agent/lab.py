@@ -100,6 +100,48 @@ def scenario_requests(cohort: str) -> list[dict]:
     return requests
 
 
+# The judge-alignment eval set: the same scenario kinds as SCENARIOS, many variants each,
+# reproducible from the simulation ID. Per kind: (count, age range, payment, processor,
+# partial). Ages sit inside each kind's window (the live policy allows 14 days, the lean
+# agent's cached one 30). Repeat requests re-ask for an eligible order already requested.
+EVAL_KINDS = (
+    ("eligible", 20, (1, 13), "settled", "ok", False),
+    ("eligible_partial", 12, (1, 13), "settled", "ok", True),
+    ("window_edge", 6, (14, 14), "settled", "ok", False),
+    ("old_window_only", 18, (15, 30), "settled", "ok", False),
+    ("outside_both", 10, (31, 90), "settled", "ok", False),
+    ("payment_pending", 10, (1, 13), "pending", "ok", False),
+    ("processor_declined", 12, (1, 13), "settled", "declined", False),
+)
+EVAL_REPEATS = 12
+EVAL_REQUESTS = sum(kind[1] for kind in EVAL_KINDS) + EVAL_REPEATS  # 100 per agent
+
+
+def eval_set(cohort: str) -> tuple[list[dict], list[dict]]:
+    """(orders, requests) for the eval set, in a shuffled but reproducible order."""
+    rng = random.Random(f"{cohort}/eval")
+    specs = [(name, ages, payment, processor, partial)
+             for name, count, ages, payment, processor, partial in EVAL_KINDS
+             for _ in range(count)]
+    rng.shuffle(specs)
+    orders, requests = [], []
+    for number, (name, ages, payment, processor, partial) in enumerate(specs, 1):
+        amount = rng.randrange(1000, 10001, 50)
+        order = {"order_id": f"{cohort}_O{number:03d}", "age_days": rng.randint(*ages),
+                 "amount_cents": amount, "payment_status": payment,
+                 "settled_cents": amount if payment == "settled" else 0,
+                 "processor_status": processor}
+        asked = rng.randrange(amount // 5, amount * 4 // 5, 50) if partial else amount
+        orders.append(order)
+        requests.append({"order_id": order["order_id"], "amount_cents": asked,
+                         "partial": partial, "scenario": name})
+    eligible = [r for r in requests if r["scenario"] == "eligible"]
+    for first in rng.sample(eligible, EVAL_REPEATS):
+        requests.append(dict(first, scenario=REPEAT_SCENARIO))
+    # Repeats go after their originals; everything else stays shuffled.
+    return orders, [dict(r, trial=trial) for trial, r in enumerate(requests, 1)]
+
+
 def generate_requests(cohort: str, orders: list[dict], count: int) -> list[dict]:
     """Refund requests: fewer than orders, each for a random order; ~20% partial."""
     if not isinstance(count, int) or not 1 <= count < len(orders):
@@ -354,10 +396,11 @@ def simulate(conn, cohort: str, order_count: int, request_count: int,
              graphs: dict, sink: EventSink, agents: Iterable[str] = AGENT_NAMES,
              observers: Iterable = (),
              progress: Callable[[str, int, int], None] | None = None,
-             scenarios: bool = False) -> list[dict]:
+             scenarios: bool = False, evalset: bool = False) -> list[dict]:
     """Create orders, then send every refund request to every selected agent.
 
-    With ``scenarios`` the fixed SCENARIOS set replaces random orders and requests
+    With ``scenarios`` the fixed SCENARIOS set replaces random orders and requests; with
+    ``evalset`` the larger judge-alignment eval set (``eval_set``) does
     (``order_count`` and ``request_count`` are ignored).
 
     Agents run one after another over the same requests. Each keeps its own simulated
@@ -377,7 +420,10 @@ def simulate(conn, cohort: str, order_count: int, request_count: int,
     if not agents:
         raise ValueError("Choose at least one agent")
     observers = list(observers)
-    if scenarios:
+    if evalset:
+        eval_orders, planned = eval_set(cohort)
+        orders = create_orders(conn, cohort, len(eval_orders), eval_orders)
+    elif scenarios:
         orders = create_orders(conn, cohort, len(SCENARIOS), scenario_orders(cohort))
         planned = scenario_requests(cohort)
     else:

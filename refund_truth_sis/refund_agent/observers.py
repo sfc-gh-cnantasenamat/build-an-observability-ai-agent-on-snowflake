@@ -21,8 +21,8 @@ from refund_agent import config
 TRULENS_APP = "REFUND_AGENT_LAB"
 TRULENS_METRICS = ("answer_relevance", "groundedness")
 # One Cortex judge model for both observers, so their scores are comparable. It's from
-# a different family than the agents (Mistral) so the judge isn't grading itself.
-JUDGE_MODEL = "openai-gpt-5-mini"
+# a different family than the agents (Claude) so the judge isn't grading its own family.
+JUDGE_MODEL = "openai-gpt-5.4-mini"
 # Langfuse's native evaluators reach Cortex through this LLM connection
 # (scripts/langfuse_llm_connection.py) and score every observation with this name and
 # metadata lab_step
@@ -42,6 +42,15 @@ def request_text(request: dict) -> str:
 
 def dollars(cents: int) -> str:
     return f"${cents / 100:,.2f}"
+
+
+def insert_values(cursor, rows: list[tuple], statement: str, chunk: int = 200) -> None:
+    """Run ``statement`` once per chunk of rows, with ``{rows}`` replaced by bound
+    ``(?, ...)`` tuples (a multi-row VALUES list read as column1, column2, ...)."""
+    for start in range(0, len(rows), chunk):
+        part = rows[start:start + chunk]
+        values = ", ".join("(" + ", ".join(["?"] * len(part[0])) + ")" for _ in part)
+        cursor.execute(statement.format(rows=values), [v for row in part for v in row])
 
 
 TOOL_OUTCOMES = {
@@ -432,28 +441,31 @@ class LangfuseObserver:
         cursor = conn.cursor()
         try:
             cursor.execute("BEGIN")
-            for run_id, observations in found.items():
-                for o in observations:
-                    usage = o.get("usageDetails") or {}
-                    cursor.execute(
-                        "INSERT INTO REFUND_AGENT_LAB.DEMO.LANGFUSE_TRACES (RUN_ID, TRACE_ID, "
-                        "OBSERVATION_ID, PARENT_OBSERVATION_ID, TYPE, NAME, MODEL, INPUT_TOKENS, "
-                        "OUTPUT_TOKENS, START_TIME, END_TIME, COST_CREDITS, EXPORTED_AT) "
-                        "SELECT ?,?,?,?,?,?,?,?,?,TO_TIMESTAMP_TZ(?),TO_TIMESTAMP_TZ(?),?,"
-                        "CURRENT_TIMESTAMP() WHERE NOT EXISTS (SELECT 1 FROM "
-                        "REFUND_AGENT_LAB.DEMO.LANGFUSE_TRACES WHERE OBSERVATION_ID = ?)",
-                        (run_id, o["traceId"], o["id"], o.get("parentObservationId"),
-                         o.get("type"), o.get("name"), o.get("providedModelName") or o.get("model"),
-                         usage.get("input"), usage.get("output"), o.get("startTime"),
-                         o.get("endTime"), o.get("totalCost"), o["id"]))
-            scored = 0
-            for run in runs:
-                for metric, score in (run.get("langfuse_scores") or {}).items():
-                    cursor.execute(
-                        "INSERT INTO REFUND_AGENT_LAB.DEMO.LANGFUSE_SCORES (RUN_ID, TRACE_ID, "
-                        "METRIC, JUDGE, SCORE, SCORED_AT) VALUES (?,?,?,?,?,CURRENT_TIMESTAMP())",
-                        (run["run_id"], self.trace_id(run["run_id"]), metric, JUDGE_MODEL, score))
-                    scored += 1
+            # One multi-row statement per chunk: a 300-run export has about 2,400
+            # observations, too many for a round trip each. Rows already exported are skipped.
+            traces = [(run_id, o["traceId"], o["id"], o.get("parentObservationId"),
+                       o.get("type"), o.get("name"), o.get("providedModelName") or o.get("model"),
+                       (o.get("usageDetails") or {}).get("input"),
+                       (o.get("usageDetails") or {}).get("output"), o.get("startTime"),
+                       o.get("endTime"), o.get("totalCost"))
+                      for run_id, observations in found.items() for o in observations]
+            insert_values(cursor, traces,
+                          "INSERT INTO REFUND_AGENT_LAB.DEMO.LANGFUSE_TRACES (RUN_ID, TRACE_ID, "
+                          "OBSERVATION_ID, PARENT_OBSERVATION_ID, TYPE, NAME, MODEL, INPUT_TOKENS, "
+                          "OUTPUT_TOKENS, START_TIME, END_TIME, COST_CREDITS, EXPORTED_AT) "
+                          "SELECT column1, column2, column3, column4, column5, column6, column7, "
+                          "column8, column9, TO_TIMESTAMP_TZ(column10), TO_TIMESTAMP_TZ(column11), "
+                          "column12, CURRENT_TIMESTAMP() FROM VALUES {rows} AS v WHERE NOT EXISTS "
+                          "(SELECT 1 FROM REFUND_AGENT_LAB.DEMO.LANGFUSE_TRACES t "
+                          "WHERE t.OBSERVATION_ID = v.column3)")
+            scores = [(run["run_id"], self.trace_id(run["run_id"]), metric, JUDGE_MODEL, score)
+                      for run in runs
+                      for metric, score in (run.get("langfuse_scores") or {}).items()]
+            insert_values(cursor, scores,
+                          "INSERT INTO REFUND_AGENT_LAB.DEMO.LANGFUSE_SCORES (RUN_ID, TRACE_ID, "
+                          "METRIC, JUDGE, SCORE, SCORED_AT) SELECT column1, column2, column3, "
+                          "column4, column5, CURRENT_TIMESTAMP() FROM VALUES {rows}")
+            scored = len(scores)
             conn.commit()
         except Exception:
             conn.rollback()

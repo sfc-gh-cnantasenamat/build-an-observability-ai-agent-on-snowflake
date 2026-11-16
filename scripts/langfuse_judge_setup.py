@@ -12,21 +12,22 @@ REFUND_LAB_JUDGE_ROLE. Afterwards revoke the grant, UNSET RSA_PUBLIC_KEY, delete
 """
 import os
 import stat
+import sys
 from pathlib import Path
 
 import requests
 import snowflake.connector
+from cryptography.hazmat.primitives import serialization
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+from refund_agent import config
+from refund_agent.observers import JUDGE_MODEL
 
 ACCOUNT_HOST = config.account_host()
-JUDGE_MODEL = "openai-gpt-5-mini"
 ENV_FILE = Path.home() / ".langfuse_spcs.env"
 
 # Connect as the judge user itself (temporary key pair): a PAT's role restriction must
 # match the creating session's role, and the admin connection is ACCOUNTADMIN.
-from cryptography.hazmat.primitives import serialization
-import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from refund_agent import config
 key = serialization.load_pem_private_key(
     (Path.home() / ".snowflake/keys/refund_lab_judge_tmp.p8").read_bytes(), password=None)
 conn = snowflake.connector.connect(
@@ -35,6 +36,12 @@ conn = snowflake.connector.connect(
 cur = conn.cursor()
 cur.execute("SELECT CURRENT_ORGANIZATION_NAME(), CURRENT_ACCOUNT(), CURRENT_ROLE()")
 assert tuple(cur.fetchone()) == (*config.expected_identity(), "REFUND_LAB_JUDGE_ROLE")
+
+# Rotating: a token keeps its name after it expires, so remove the old one first.
+cur.execute("SHOW USER PROGRAMMATIC ACCESS TOKENS")
+names = [dict(zip([d[0].lower() for d in cur.description], r)).get("name") for r in cur.fetchall()]
+if "LANGFUSE_JUDGE" in names:
+    cur.execute("ALTER USER REMOVE PROGRAMMATIC ACCESS TOKEN LANGFUSE_JUDGE")
 
 cur.execute("ALTER USER ADD PROGRAMMATIC ACCESS TOKEN LANGFUSE_JUDGE "
             "ROLE_RESTRICTION = 'REFUND_LAB_JUDGE_ROLE' DAYS_TO_EXPIRY = 7 "

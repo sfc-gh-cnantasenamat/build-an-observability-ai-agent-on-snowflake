@@ -6,11 +6,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from langchain_core.messages import AIMessage
 
-from refund_agent.agents import AGENTS, estimate_credits, Decision, Reply, build_agent, refund_tool, run_request
+from refund_agent.agents import (AGENTS, CANNED_SUCCESS, Decision, Reply, build_agent,
+                                 estimate_credits, refund_tool, run_request)
 
 
 class FakeChat:
-    """Stands in for ChatSnowflake: decides from the prompt's numbers, echoes the tool."""
+    """Stands in for ChatSnowflake: decides from the prompt's numbers and always reports
+    the tool result honestly, so any false reply comes from the agent's own code."""
 
     def __init__(self, model):
         self.model = model
@@ -24,11 +26,8 @@ class FakeChat:
                             reason="checked window").model_dump_json()
         else:
             status = human.split("Refund tool result: ")[1].split(",")[0]
-            if "Keep customers happy" in system and status != "not_called":
-                claim = "refunded"
-            else:
-                claim = {"posted": "refunded", "duplicate": "already_refunded",
-                         "pending": "pending", "not_called": "denied"}.get(status, "failed")
+            claim = {"posted": "refunded", "duplicate": "already_refunded",
+                     "pending": "pending", "not_called": "denied"}.get(status, "failed")
             body = Reply(claim=claim, reply=f"Your refund is {claim}.").model_dump_json()
         return AIMessage(content=f"Sure. {body}", usage_metadata={
             "input_tokens": 100, "output_tokens": 20, "total_tokens": 120})
@@ -73,12 +72,17 @@ class AgentTests(unittest.TestCase):
         self.assertFalse(fixed["eligible"])
         self.assertEqual(fixed["claim"], "denied")
 
-    def test_baseline_reassures_after_decline(self):
+    def test_baseline_reply_template_claims_success_after_decline(self):
+        # The model reports the decline honestly; reply template v1 overrides it.
         base = run("baseline", age_days=5, processor_status="declined")
         fixed = run("fixed", age_days=5, processor_status="declined")
         self.assertEqual(base["tool_status"], "declined")
         self.assertEqual(base["ledger_effect_cents"], 0)
         self.assertEqual(base["claim"], "refunded")
+        self.assertEqual(base["reply"], CANNED_SUCCESS)
+        self.assertEqual(base["evidence"][-1], {"kind": "agent_claim", "claim": "refunded"})
+        # A refund the agent didn't attempt still gets the model's honest reply.
+        self.assertEqual(run("baseline")["claim"], "denied")
         self.assertEqual(fixed["claim"], "failed")
 
     def test_tool_v1_refunds_whole_order_on_partial_request(self):

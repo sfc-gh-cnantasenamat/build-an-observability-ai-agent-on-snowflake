@@ -4,13 +4,42 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from refund_agent.lab import (SCENARIOS, generate_orders, generate_requests, scenario_orders,
+from refund_agent.lab import (EVAL_KINDS, EVAL_REPEATS, EVAL_REQUESTS, SCENARIOS, eval_set,
+                              generate_orders, generate_requests, scenario_orders,
                               scenario_requests, valid_cohort)
 
 COHORT = "APP_0123456789ABCDEF"
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_eval_set_is_reproducible_and_balanced_by_kind(self):
+        orders, requests = eval_set(COHORT)
+        self.assertEqual((orders, requests), eval_set(COHORT))
+        self.assertNotEqual(orders, eval_set("APP_FEDCBA9876543210")[0])
+        self.assertEqual(len(requests), EVAL_REQUESTS)
+        self.assertEqual(EVAL_REQUESTS, 100)
+        self.assertEqual([r["trial"] for r in requests], list(range(1, 101)))
+        counts = {}
+        for r in requests:
+            counts[r["scenario"]] = counts.get(r["scenario"], 0) + 1
+        expected = {name: count for name, count, *_ in EVAL_KINDS}
+        expected["repeat_request"] = EVAL_REPEATS
+        self.assertEqual(counts, expected)
+        by_id = {o["order_id"]: o for o in orders}
+        ranges = {name: ages for name, _, ages, *_ in EVAL_KINDS}
+        seen = set()
+        for r in requests:
+            order = by_id[r["order_id"]]
+            if r["scenario"] == "repeat_request":
+                self.assertIn(r["order_id"], seen)  # the original came first
+                continue
+            seen.add(r["order_id"])
+            low, high = ranges[r["scenario"]]
+            self.assertTrue(low <= order["age_days"] <= high, r)
+            self.assertEqual(r["partial"], r["amount_cents"] < order["amount_cents"])
+        self.assertTrue(all(o["payment_status"] == "pending"
+                            for o in orders if o["settled_cents"] == 0))
+
     def test_orders_are_reproducible_and_realistic(self):
         orders = generate_orders(COHORT, 50)
         self.assertEqual(orders, generate_orders(COHORT, 50))

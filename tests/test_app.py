@@ -33,7 +33,7 @@ def run_rows():
              "agent_policy_id": "P_2026_14D", "attempted": False, "tool_status": "not_called",
              "ledger_effect_cents": 0, "expected_effect_cents": 0, "claim": "refunded",
              "business_correct": False, "false_success": True, "customer_misinformed": True,
-             "money_at_risk_cents": 0, "root_cause": "prompt",
+             "money_at_risk_cents": 0, "root_cause": "reply",
              "model_cost_credits": 160e-6, "agent_latency_ms": 3000},
             {**base, "trial": trial, "run_id": f"fix{trial}", "variant": "fixed",
              "agent_policy_id": "P_2026_14D", "attempted": False, "tool_status": "not_called",
@@ -71,6 +71,7 @@ class FakeRaw:
 
 class FakeConnection:
     raw_connection = object()
+    agreement = pd.DataFrame(columns=["COHORT_ID", "TOOL", "METRIC", "N", "KAPPA"])
 
     def query(self, sql, params=None, ttl=None):
         if "CURRENT_ORGANIZATION_NAME" in sql:
@@ -85,8 +86,18 @@ class FakeConnection:
         if "TRULENS_SCORES" in sql:
             return pd.DataFrame(columns=["RUN_ID", "METRIC", "SCORE"])
         if "JUDGE_AGREEMENT" in sql:
-            return pd.DataFrame(columns=["COHORT_ID", "TOOL", "METRIC", "N", "KAPPA"])
+            return self.agreement
         return pd.DataFrame()
+
+
+class AgreementConnection(FakeConnection):
+    agreement = pd.DataFrame([{
+        "COHORT_ID": COHORT, "TOOL": "Langfuse", "METRIC": "groundedness", "N": 300,
+        "PASS_CORRECT": 245, "PASS_WRONG": 40, "FAIL_CORRECT": 1, "FAIL_WRONG": 14,
+        "PRECISION": 0.86, "PRECISION_LO": 0.814, "PRECISION_HI": 0.896,
+        "RECALL": 0.996, "RECALL_LO": 0.977, "RECALL_HI": 0.999, "F1": 0.923,
+        "AGREEMENT": 0.863, "KAPPA": 0.356, "KAPPA_LO": 0.172, "KAPPA_HI": 0.539,
+        "FALSE_PASS_RATE": 0.741}])
 
 
 class AppTests(unittest.TestCase):
@@ -114,6 +125,20 @@ class AppTests(unittest.TestCase):
             self.assertEqual(board.loc["Lean", "Money at risk ($)"], 80.0)
             self.assertEqual(board.loc["Baseline", "False successes"], 2)
             self.assertTrue(any("most business-correct agent is Fixed" in e.value for e in at.error))
+
+    def test_judge_agreement_shows_classifier_statistics_with_intervals(self):
+        with mock.patch("streamlit.connection", return_value=AgreementConnection()):
+            at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=60)
+            at.run()
+            at.segmented_control[0].set_value("Fixed").run()
+            at.button(key="reveal").click().run()
+            self.assertFalse(at.exception, at.exception)
+            judges = next(d.value for d in at.dataframe if "Precision" in d.value.columns)
+            row = judges.iloc[0]
+            self.assertEqual(row.Judge, "Langfuse groundedness")
+            self.assertEqual(row.Precision, "0.86 [0.81, 0.90]")
+            self.assertEqual(row.Kappa, "0.36 [0.17, 0.54]")
+            self.assertEqual(row["Wrong runs passed"], "40 of 54")
 
     def test_requests_and_investigate_show_every_agent(self):
         with mock.patch("streamlit.connection", return_value=FakeConnection()):

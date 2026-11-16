@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from langchain_core.messages import AIMessage
 
 from refund_agent.observers import (NATIVE_JUDGE_STEP, LangfuseObserver, TruLensObserver,
-                                    TruLensTracedChat)
+                                    TruLensTracedChat, insert_values)
 
 REQUEST = {"case_id": "C01_O01", "order_id": "O1", "amount_cents": 4000,
            "order_total_cents": 4000, "age_days": 20, "payment_status": "settled",
@@ -76,7 +76,7 @@ class NativeLangfuseJudgeTests(unittest.TestCase):
             rows = []
             def execute(self, sql, params=None):
                 if params and "LANGFUSE_SCORES" in sql:
-                    self.rows.append(params)
+                    self.rows.extend(zip(*[iter(params)] * 5))
             def close(self):
                 pass
 
@@ -90,6 +90,24 @@ class NativeLangfuseJudgeTests(unittest.TestCase):
         result = observer.export(Conn(), [run], wait_s=0, score_wait_s=1)
         self.assertEqual(run["langfuse_scores"], {"groundedness": 1, "answer_relevance": 0.5})
         self.assertEqual(result["scores"], 2)
+        self.assertEqual(sorted(row[2] for row in Cursor.rows), ["answer_relevance", "groundedness"])
+
+    def test_insert_values_batches_rows_into_multi_row_statements(self):
+        calls = []
+
+        class Cursor:
+            def execute(self, sql, params=None):
+                calls.append((sql, params))
+
+        rows = [(i, f"r{i}") for i in range(450)]
+        insert_values(Cursor(), rows, "INSERT INTO T SELECT column1, column2 FROM VALUES {rows}")
+        self.assertEqual(len(calls), 3)  # chunks of 200, 200, 50
+        self.assertEqual(calls[0][0].count("(?, ?)"), 200)
+        self.assertEqual(calls[2][0].count("(?, ?)"), 50)
+        self.assertEqual([v for _, params in calls for v in params],
+                         [v for row in rows for v in row])
+        insert_values(Cursor(), [], "unused {rows}")
+        self.assertEqual(len(calls), 3)
 
 
 class TruthConn:
@@ -138,11 +156,11 @@ class TruLensCostSpanTests(unittest.TestCase):
     def test_cost_attributes_use_token_usage_and_lab_rates(self):
         reply = AIMessage("{}", usage_metadata={"input_tokens": 1000, "output_tokens": 100,
                                                 "total_tokens": 1100})
-        chat = TruLensTracedChat(llm=None, model="mistral-large3")
+        chat = TruLensTracedChat(llm=None, model="claude-sonnet-5-5")
         attributes = TruLensTracedChat._cost_attributes(reply, None, chat)
         values = {key.rsplit(".", 1)[-1]: value for key, value in attributes.items()}
         self.assertEqual(values["num_tokens"], 1100)
-        self.assertAlmostEqual(values["cost"], (1000 * 0.30 + 100 * 0.90) / 1e6)
+        self.assertAlmostEqual(values["cost"], (1000 * 1.20 + 100 * 6.00) / 1e6)
         self.assertEqual(values["cost_currency"], "Snowflake AI credits")
 
 

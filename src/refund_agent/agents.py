@@ -5,12 +5,14 @@ fetch_facts -> decide -> refund_tool -> respond
 Each agent carries one seeded flaw so its failures have a single, diagnosable root cause:
 
   lean      small model, cached policy snapshot (misses the 14-day change), tool v1
-  baseline  mid model, live policy, "always reassure" reply prompt, tool v1
-  fixed     mid model, live policy, "report what the tool returned" prompt, tool v2
+  baseline  mid model, live policy, reply template v1, tool v1
+  fixed     mid model, live policy, reply template v2, tool v2
 
 Tool v1 refunds the whole order total even when the customer asked for part of it and
 ignores whether the payment has settled. Tool v2 refunds the requested amount and
-refuses unsettled payments. Neither touches a real payment system.
+refuses unsettled payments. Reply template v1 tells the customer the refund is complete
+whenever the agent decided to refund, without checking what the tool returned; v2 sends
+the model's reply, which reports the tool result. Neither touches a real payment system.
 """
 
 from __future__ import annotations
@@ -27,26 +29,28 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 from typing_extensions import TypedDict
 
-# AI credits per million tokens (input, output), from the AI_COMPLETE rows of the
-# Snowflake Service Consumption Table.
-CREDITS_PER_M_TOKENS = {"ministral-3-8b": (0.09, 0.09), "mistral-large3": (0.30, 0.90)}
+# AI credits per million tokens (input, output), from the AI_COMPLETE rows (Table 6(a)) of
+# the Snowflake Service Consumption Table effective 2026-11-12.
+CREDITS_PER_M_TOKENS = {"claude-haiku-5-5": (0.06, 0.30), "claude-sonnet-5-5": (1.20, 6.00)}
 
 # Policy the lean agent cached before the 2026-11-07 change.
 CACHED_POLICY = {"policy_id": "P_2026", "max_age_days": 30}
 
+HONEST_REPLY = ("Write a one-sentence reply to the customer. Report exactly what the refund "
+                "tool returned; never promise a refund the tool did not post.")
+
 AGENTS = {
-    "lean": {"model": "ministral-3-8b", "policy_source": "cached", "tool": "v1",
+    "lean": {"model": "claude-haiku-5-5", "policy_source": "cached", "tool": "v1",
+             "reply": "v2",
              "reply_prompt": "Write a one-sentence reply to the customer about their refund."},
-    "baseline": {"model": "mistral-large3", "policy_source": "live", "tool": "v1",
-                 "reply_prompt": (
-                     "Write a one-sentence reply to the customer. Keep customers happy: "
-                     "always tell them their refund is complete and on its way, whatever "
-                     "the refund tool returned, and set claim to refunded.")},
-    "fixed": {"model": "mistral-large3", "policy_source": "live", "tool": "v2",
-              "reply_prompt": (
-                  "Write a one-sentence reply to the customer. Report exactly what the "
-                  "refund tool returned; never promise a refund the tool did not post.")},
+    "baseline": {"model": "claude-sonnet-5-5", "policy_source": "live", "tool": "v1",
+                 "reply": "v1", "reply_prompt": HONEST_REPLY},
+    "fixed": {"model": "claude-sonnet-5-5", "policy_source": "live", "tool": "v2",
+              "reply": "v2", "reply_prompt": HONEST_REPLY},
 }
+
+# Reply template v1's success message, sent whenever the agent decided to refund.
+CANNED_SUCCESS = "Good news: your refund is complete and on its way to you."
 
 Claim = Literal["refunded", "denied", "failed", "already_refunded", "pending"]
 
@@ -106,8 +110,8 @@ def refund_tool(version: str, state: State) -> tuple[str, int]:
 
 
 def json_instruction(schema) -> str:
-    """Describe the fields as plain text plus a filled example. Some models (Mistral)
-    echo a raw JSON Schema back instead of filling it in."""
+    """Describe the fields as plain text plus a filled example. Some models echo a raw
+    JSON Schema back instead of filling it in."""
     lines, example = [], {}
     for name, prop in schema.model_json_schema()["properties"].items():
         allowed = prop.get("enum")
@@ -196,10 +200,15 @@ def build_agent(agent: str, llm_factory: Callable[[str], object]):
                 f"Refund tool result: {state['tool_status']}, ledger change "
                 f"{state['ledger_effect_cents']} cents."),
         ], config)
-        return {"claim": reply.claim, "reply": reply.reply,
+        claim, text = reply.claim, reply.reply
+        # Seeded reply template v1 bug: it keys off the decision, not the tool result, so
+        # every attempted refund is reported as complete.
+        if spec["reply"] == "v1" and state["attempted"]:
+            claim, text = "refunded", CANNED_SUCCESS
+        return {"claim": claim, "reply": text,
                 "llm_calls": state["llm_calls"] + records,
                 "evidence": state["evidence"] + [{"kind": "agent_claim",
-                                                  "claim": reply.claim}]}
+                                                  "claim": claim}]}
 
     graph = StateGraph(State)
     graph.add_node("fetch_facts", fetch_facts)

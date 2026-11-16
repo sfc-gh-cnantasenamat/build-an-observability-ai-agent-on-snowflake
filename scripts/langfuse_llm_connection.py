@@ -7,6 +7,7 @@ import snowflake.connector
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from refund_agent import config
+from refund_agent.observers import JUDGE_MODEL
 
 HOST = config.LANGFUSE_HOST
 CORTEX = f"{config.account_host()}/api/v2/cortex/v1"
@@ -18,7 +19,7 @@ basic = base64.b64encode(f"{env['LF_INIT_PUBLIC_KEY']}:{env['LF_INIT_SECRET_KEY'
 h = {"X-SF-SPCS-Authorization": f'Snowflake Token="{tok}"', "Authorization": f"Basic {basic}"}
 r = requests.put(f"{HOST}/api/public/llm-connections", headers=h, timeout=30, json={
     "provider": "snowflake-cortex", "adapter": "openai", "secretKey": env["CORTEX_JUDGE_PAT"],
-    "baseURL": CORTEX, "customModels": ["openai-gpt-5-mini"], "withDefaultModels": False})
+    "baseURL": CORTEX, "customModels": [JUDGE_MODEL], "withDefaultModels": False})
 print("llm-connection:", r.status_code, r.text[:300].replace(env["CORTEX_JUDGE_PAT"], "***"))
 for path in ("/api/public/llm-connections", "/api/public/evaluators", "/api/public/evals/configs",
              "/api/public/v2/evaluators"):

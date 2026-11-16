@@ -1,10 +1,11 @@
 """Create Langfuse's native LLM-as-a-judge evaluators for the refund lab.
 
 Two evaluators mirror the TruLens metrics (groundedness, answer_relevance) and run inside
-Langfuse on Cortex `openai-gpt-5-mini` through the "snowflake-cortex" LLM connection. An
+Langfuse on the Cortex JUDGE_MODEL through the "snowflake-cortex" LLM connection. An
 evaluation rule runs them on every observation whose metadata has
 `lab_step = judge_input`: the step LangfuseObserver adds to each run's trace with the
-same request and facts TruLens sees. Idempotent by name.
+same request and facts TruLens sees. Idempotent by name; an existing evaluator whose
+model differs from JUDGE_MODEL is switched to it.
 """
 import base64
 import json
@@ -45,18 +46,26 @@ h = {"X-SF-SPCS-Authorization": f'Snowflake Token="{tok}"', "Authorization": f"B
 existing = {e["name"]: e for e in requests.get(f"{HOST}/api/public/v2/evaluators", headers=h,
                                                timeout=30).json().get("data", [])}
 ids = {}
+model_config = {"provider": LANGFUSE_JUDGE_PROVIDER, "model": JUDGE_MODEL}
+OUTPUT = {"dataType": "NUMERIC", "minValue": 0, "maxValue": 1,
+          "scoreValueInstructions": "A number from 0 to 1.",
+          "scoreReasoningInstructions": "One or two sentences."}
 for name, prompt in EVALUATORS.items():
-    if name in existing:
-        ids[name] = existing[name]["id"]; print("exists:", name); continue
     variables = [m for m in MAPPING if "{{" + m["variable"] + "}}" in prompt]
+    definition = {"type": "llm_as_judge", "prompt": prompt, "modelConfig": model_config,
+                  "variableMapping": variables, "outputDefinition": OUTPUT}
+    if name in existing:
+        ids[name] = existing[name]["id"]
+        if (existing[name].get("modelConfig") or {}).get("model") == JUDGE_MODEL:
+            print("exists:", name); continue
+        # A model change is a new evaluator version: send the complete definition.
+        r = requests.patch(f"{HOST}/api/public/v2/evaluators/{ids[name]}", headers=h,
+                           timeout=30, json=definition)
+        print("PATCH evaluator", name, r.status_code, r.text[:300])
+        r.raise_for_status()
+        continue
     r = requests.post(f"{HOST}/api/public/v2/evaluators", headers=h, timeout=30, json={
-        "type": "llm_as_judge", "name": name, "prompt": prompt,
-        "description": f"Refund lab: mirrors TruLens {name}",
-        "modelConfig": {"provider": LANGFUSE_JUDGE_PROVIDER, "model": JUDGE_MODEL},
-        "variableMapping": variables,
-        "outputDefinition": {"dataType": "NUMERIC", "minValue": 0, "maxValue": 1,
-                             "scoreValueInstructions": "A number from 0 to 1.",
-                             "scoreReasoningInstructions": "One or two sentences."}})
+        **definition, "name": name, "description": f"Refund lab: mirrors TruLens {name}"})
     print("POST evaluator", name, r.status_code, r.text[:300])
     r.raise_for_status()
     ids[name] = r.json()["id"]

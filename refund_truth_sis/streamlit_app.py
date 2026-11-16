@@ -343,17 +343,28 @@ if st.session_state.revealed and pick:
     if not agreement.empty:
         st.subheader("How well each judge agrees with business truth")
         st.caption(
-            f"Judge model for both tools: {JUDGE_MODEL}. Business truth is BUSINESS_CORRECT "
-            "from RUN_EVIDENCE, copied into each tool as business_correct. Same statistics "
-            "as Langfuse Score Analytics: correlation and error use the raw score against "
-            "truth as 0/1; agreement, Cohen's kappa and F1 count a score of at least "
-            f"{PASS_THRESHOLD} as a pass. Kappa near 0 means no better than chance.")
+            f"Judge model for both tools: {JUDGE_MODEL}. Each judge is treated as a classifier: "
+            f"a score of at least {PASS_THRESHOLD} is a pass, predicting the run was correct, and "
+            "BUSINESS_CORRECT from RUN_EVIDENCE is the label. Precision: of the runs a judge "
+            "passed, the share that were correct. Kappa near 0 means no better than chance. "
+            "Brackets are 95% intervals; with 30 runs they are wide, so use the eval set "
+            "(scripts/run_simulation.py --eval) to compare judges.")
         stats = agreement.assign(Judge=agreement.tool + " " + agreement.metric.str.replace("_", " "))
+
+        def with_interval(value, low, high):
+            return "" if pd.isna(value) else f"{value:.2f} [{low:.2f}, {high:.2f}]"
+
         st.dataframe(
-            stats[["Judge", "n", "pearson", "spearman", "mae", "rmse", "agreement", "kappa", "f1"]]
-            .rename(columns={"n": "Runs", "pearson": "Pearson", "spearman": "Spearman",
-                             "mae": "MAE", "rmse": "RMSE", "agreement": "Agreement",
-                             "kappa": "Kappa", "f1": "F1"}),
+            pd.DataFrame({
+                "Judge": stats.Judge, "Runs": stats.n,
+                "Precision": [with_interval(*v) for v in
+                              zip(stats.precision, stats.precision_lo, stats.precision_hi)],
+                "Recall": [with_interval(*v) for v in
+                           zip(stats.recall, stats.recall_lo, stats.recall_hi)],
+                "F1": stats.f1,
+                "Kappa": [with_interval(*v) for v in zip(stats.kappa, stats.kappa_lo, stats.kappa_hi)],
+                "Wrong runs passed": stats.pass_wrong.astype(str) + " of "
+                                     + (stats.pass_wrong + stats.fail_wrong).astype(str)}),
             hide_index=True, key=f"agreement_{cohort}")
         cols = st.columns(len(stats))
         for col, row in zip(cols, stats.itertuples()):
@@ -372,7 +383,8 @@ def verdict(row):
     if row.business_correct:
         return "Correct"
     return {"stale_data": "Wrong: stale policy", "tool": "Wrong: tool",
-            "prompt": "Wrong: false reply", "model_error": "Wrong: model"}.get(
+            "reply": "Wrong: false reply", "prompt": "Wrong: false reply",
+            "model_error": "Wrong: model"}.get(
         row.root_cause, "Wrong")
 
 

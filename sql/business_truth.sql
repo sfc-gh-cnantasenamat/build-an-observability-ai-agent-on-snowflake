@@ -7,7 +7,7 @@
 --   EXPECTED_EFFECT_CENTS  what a correct agent would have refunded
 --   MONEY_AT_RISK_CENTS    refunded beyond what was owed (money lost)
 --   CUSTOMER_MISINFORMED   the reply misstates what actually happened
---   ROOT_CAUSE             stale_data | tool | prompt | model_error (first that applies)
+--   ROOT_CAUSE             stale_data | tool | reply | model_error (first that applies)
 CREATE OR REPLACE VIEW REFUND_AGENT_LAB.DEMO.RUN_EVIDENCE COPY GRANTS AS
 WITH eligible_policy AS (
  SELECT r.RUN_ID, p.POLICY_ID, p.MAX_AGE_DAYS, p.EFFECTIVE_FROM,
@@ -90,7 +90,7 @@ SELECT COHORT_ID, TRIAL, RUN_ID, VARIANT, CASE_ID,
          WHEN TOOL_STATUS = 'posted' AND ALREADY_REFUNDED THEN 'tool'
          WHEN TOOL_STATUS = 'posted' AND NOT ELIGIBLE AND PAYMENT_STATUS <> 'settled'
               THEN 'tool'
-         WHEN CLAIM = 'refunded' AND LEDGER_EFFECT_CENTS = 0 THEN 'prompt'
+         WHEN CLAIM = 'refunded' AND LEDGER_EFFECT_CENTS = 0 THEN 'reply'
          WHEN AGENT_POLICY_ID IS NOT NULL THEN 'model_error'
        END AS ROOT_CAUSE,
        CASE
