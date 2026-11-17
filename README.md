@@ -2,7 +2,7 @@
 
 Companion code for the Snowflake developer guide [Build an Observability AI Agent on Snowflake](https://github.com/sfc-gh-cnantasenamat/sfguide-build-an-observability-ai-agent-on-snowflake).
 
-Three LangGraph refund agents answer the same synthetic refund requests. Each looks good on at least one usual signal: cost, latency, its own reported success, or an LLM judge. Only Snowflake, which joins each run to orders, policies, payments and the ledger, shows which agent actually did the right thing with the money. All data is synthetic; nothing touches a real payment system.
+Three LangGraph refund agents answer the same synthetic refund requests. Each looks good on at least one usual signal: cost, its own reported success, or an LLM judge. Only Snowflake, which joins each run to orders, policies, payments and the ledger, shows which agent actually did the right thing with the money. All data is synthetic; nothing touches a real payment system.
 
 **Lean and Baseline are broken on purpose.** Each has a planted flaw in code (a stale cached policy, a reply template that always reports success, a buggy refund tool) standing in for a mistake a real team could ship. Fixed is the control. The lab tests whether each signal can spot these flaws; it isn't a comparison of the Claude models.
 
@@ -86,11 +86,16 @@ Thirty runs are enough to see each flaw, but too few to rank judges: Langfuse gr
 
 ### What each signal picks
 
-- **Cost:** Lean, at about a fifteenth of the others' cost per request. Latency doesn't separate the agents much: Lean's smaller model was not faster here.
-- **Self-reported success:** Lean, then Baseline. Both report success more often than Fixed, which is the only agent that's always right.
-- **Groundedness:** catches every reply that contradicts the facts, such as Baseline's false "refunded". It passes nearly every action that was wrong but described accurately: a refund under an out-of-date policy, or the wrong amount refunded. About 1 in 7 runs it passes is wrong.
+On the eval set, every signal except business truth ranks a broken agent above Fixed:
+
+- **Cost:** Lean, at about a fifteenth of the others' cost per request.
+- **Self-reported success:** Lean (49%) and Baseline (50%), tied, above Fixed (38%), which is the only agent that's always right.
+- **Latency:** barely separates the agents; Lean's smaller model was slower per call here (about 1.8 to 2.1 s against 1.5 s).
+- **Groundedness:** catches every reply that contradicts the facts, such as Baseline's false "refunded". It passes nearly every action that was wrong but described accurately: a refund under an out-of-date policy, or the wrong amount refunded. About 1 in 7 runs it passes is wrong, and most of those are Lean's, so Lean looks good on every common signal.
 - **Answer relevance:** close to chance in both tools.
 - **Business truth:** only it picks Fixed and shows the money at risk.
+
+The 10-request scenario set is for seeing each flaw, not for comparing rates: one request moves a rate by 10 points.
 
 Cost is estimated from token counts at the published Cortex rates (Snowflake Service Consumption Table, AI_COMPLETE rows).
 
