@@ -28,7 +28,8 @@ for _module in (refund_agent.config, refund_agent.events, refund_agent.agents,
     _module._LOADED_MTIME = _mtime
 
 from refund_agent.agents import AGENTS, build_agent
-from refund_agent.lab import AGENT_NAMES, MAX_ORDERS, SCENARIOS, SqlSink, simulate
+from refund_agent.lab import (AGENT_NAMES, MAX_ORDERS, SCENARIOS, SqlSink, StreamingSink,
+                              simulate)
 from refund_agent.observers import (JUDGE_MODEL, PASS_THRESHOLD, TRULENS_METRICS,
                                     LangfuseObserver, TruLensObserver)
 
@@ -99,22 +100,37 @@ def frame(sql, *params):
 IWH = "REFUND_LAB_IWH"
 
 
-def leaderboard_frames(cohort):
-    """Read the leaderboard inputs on the interactive warehouse when it's already running.
-
-    Each resume of an interactive warehouse starts a new one-hour minimum charge, so the app
-    never resumes it: run the notebook or scripts/run_simulation.py to start it. Writes and
-    the TruLens read (AI Observability event table) stay on the standard warehouse.
-    """
+def iwh_state():
     try:
         cursor = connection.raw_connection.cursor()
         cursor.execute(f"SHOW WAREHOUSES LIKE '{IWH}'")
         columns = [d[0].lower() for d in cursor.description]
-        state = dict(zip(columns, cursor.fetchone() or ())).get("state")
+        return dict(zip(columns, cursor.fetchone() or ())).get("state")
     except Exception:
-        state = None
+        return None
+
+
+def set_iwh(action):
+    """Resume or suspend the interactive warehouse (needs OPERATE on it)."""
+    connection.raw_connection.cursor().execute(f"ALTER WAREHOUSE {IWH} {action}")
+
+
+def leaderboard_frames(cohort, use_iwh):
+    """Read the leaderboard inputs on the interactive warehouse when it's running, or when
+    ``use_iwh`` asks for it to be resumed.
+
+    Each resume of an interactive warehouse starts a new one-hour minimum charge and it
+    can't auto-suspend in under 24 hours, so the app resumes it only on request, keeps it
+    running for the session's reruns, and offers a Suspend button. Writes and the TruLens
+    read (AI Observability event table) stay on the standard warehouse.
+    """
+    state = iwh_state()
+    if state != "STARTED" and use_iwh:
+        set_iwh("RESUME IF SUSPENDED")
+        state = "STARTED"
     if state != "STARTED":
         return frame(RUNS_SQL, cohort), frame(LANGFUSE_SQL, cohort), "standard"
+    cursor = connection.raw_connection.cursor()
     cursor.execute("SELECT CURRENT_WAREHOUSE()")
     home = cursor.fetchone()[0]
     try:
@@ -122,6 +138,15 @@ def leaderboard_frames(cohort):
         return frame(RUNS_SQL, cohort), frame(LANGFUSE_SQL, cohort), "interactive"
     finally:
         cursor.execute(f"USE WAREHOUSE {home}")
+
+
+def streaming_key():
+    """The REFUND_LAB_STREAMER private key from the streamer_private_key secret
+    (scripts/app_streaming_setup.py), or None when the app wasn't given it."""
+    try:
+        return st.secrets["streamer_private_key"]
+    except Exception:
+        return None
 
 
 @st.cache_resource
@@ -173,6 +198,16 @@ with st.sidebar:
                             format_func=AGENT_LABELS.get, key="agents")
     observers_on = st.multiselect("Observers", ["TruLens", "Langfuse"],
                                   default=["TruLens", "Langfuse"], key="observers")
+    use_streaming = st.toggle(
+        "Write with Snowpipe Streaming", value=streaming_key() is not None,
+        key="use_streaming", disabled=streaming_key() is None,
+        help="Stream runs, trace events and model calls as the key-pair service user "
+             "REFUND_LAB_STREAMER. Needs scripts/app_streaming_setup.py; otherwise the app "
+             "uses ordinary inserts.")
+    use_iwh = st.toggle(
+        "Serve the leaderboard on the interactive warehouse", value=False, key="use_iwh",
+        help=f"Resumes {IWH} if it's suspended. Each resume bills at least one hour, and "
+             "it can't auto-suspend in under 24 hours: suspend it below when you're done.")
     run_clicked = st.button("Run simulation", type="primary", icon=":material/play_arrow:",
                             key="run_simulation", width="stretch", disabled=not agents)
 
@@ -202,10 +237,20 @@ if run_clicked:
                      text=f"{AGENT_LABELS[agent]} agent: request {trial} of {count}")
 
     try:
+        sink = SqlSink(connection.raw_connection)
+        if use_streaming:
+            try:
+                sink = StreamingSink(cohort, private_key=streaming_key())
+            except Exception as error:
+                notes.append("Snowpipe Streaming could not start, so this run used ordinary "
+                             f"inserts: {type(error).__name__}: {error}")
         runs = simulate(connection.raw_connection, cohort, int(order_count),
-                        int(request_count), agent_graphs(), SqlSink(connection.raw_connection),
+                        int(request_count), agent_graphs(), sink,
                         agents=agents, observers=observers, progress=progress,
                         scenarios=use_scenarios)
+        if sink.name == "streaming":
+            notes.append("Snowpipe Streaming committed rows: " + ", ".join(
+                f"{table} {count}" for table, count in sink.offsets.items()) + ".")
         if langfuse is not None:
             bar.progress(1.0, text="Waiting for Langfuse's judges, then exporting to Snowflake...")
             langfuse.flush()
@@ -254,7 +299,7 @@ if not cohort:
     st.stop()
 
 try:
-    runs, langfuse, served_by = leaderboard_frames(cohort)
+    runs, langfuse, served_by = leaderboard_frames(cohort, use_iwh)
     trulens = frame(TRULENS_SQL, f"{cohort}_")
 except Exception as error:
     st.error(f"Could not load the evidence: {error}")
@@ -275,9 +320,20 @@ board_runs = runs.merge(scores.drop(columns="variant"), on="run_id", how="left")
 st.header("1. Pick a winner")
 st.caption("These are the signals a team usually has: cost, speed, the agent's own report "
            "and two LLM judges. Pick the agent you'd ship before revealing business truth.")
-st.caption(f"Leaderboard served by the interactive warehouse {IWH}." if served_by == "interactive"
-           else f"Leaderboard served by the standard warehouse ({IWH} is suspended; the "
-                "notebook and scripts/run_simulation.py start it).")
+if served_by == "interactive":
+    def suspend_iwh():
+        # A callback runs before the sidebar toggle is drawn, so it may reset it.
+        set_iwh("SUSPEND")
+        st.session_state.use_iwh = False
+
+    note, suspend = st.columns([4, 1], vertical_alignment="center")
+    note.caption(f"Leaderboard served by the interactive warehouse {IWH}. It bills while it "
+                 "runs and can't auto-suspend in under 24 hours.")
+    suspend.button(f"Suspend {IWH}", key="suspend_iwh", icon=":material/pause:",
+                   on_click=suspend_iwh)
+else:
+    st.caption(f"Leaderboard served by the standard warehouse ({IWH} is suspended; turn on "
+               "the interactive warehouse in the sidebar to use it).")
 
 
 def leaderboard(df):

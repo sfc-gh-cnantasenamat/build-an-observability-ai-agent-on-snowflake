@@ -46,16 +46,20 @@ def run_rows():
 
 
 class FakeCursor:
-    def __init__(self, state, log):
-        self.state, self.log, self.description = state, log, None
+    def __init__(self, raw):
+        self.raw, self.description = raw, None
 
     def execute(self, sql):
-        self.log.append(sql)
+        self.raw.log.append(sql)
         if sql.startswith("SHOW WAREHOUSES"):
             self.description = [("name",), ("state",)]
-            self._row = ("REFUND_LAB_IWH", self.state)
+            self._row = ("REFUND_LAB_IWH", self.raw.state)
         elif "CURRENT_WAREHOUSE" in sql:
             self._row = ("STANDARD_WH",)
+        elif sql.startswith("ALTER WAREHOUSE REFUND_LAB_IWH RESUME"):
+            self.raw.state = "STARTED"
+        elif sql == "ALTER WAREHOUSE REFUND_LAB_IWH SUSPEND":
+            self.raw.state = "SUSPENDED"
 
     def fetchone(self):
         return self._row
@@ -66,7 +70,7 @@ class FakeRaw:
         self.state, self.log = state, []
 
     def cursor(self):
-        return FakeCursor(self.state, self.log)
+        return FakeCursor(self)
 
 
 class FakeConnection:
@@ -175,6 +179,27 @@ class AppTests(unittest.TestCase):
         self.assertFalse(at.exception, at.exception)
         self.assertFalse(any(sql.startswith("USE WAREHOUSE") for sql in fake.raw_connection.log))
         self.assertTrue(any("served by the standard warehouse" in c.value for c in at.caption))
+        self.assertTrue(at.toggle(key="use_streaming").disabled)  # no streamer secret
+
+    def test_interactive_toggle_resumes_then_suspend_button_stops_it(self):
+        fake = FakeConnection()
+        fake.raw_connection = FakeRaw("SUSPENDED")
+        with mock.patch("streamlit.connection", return_value=fake):
+            at = AppTest.from_file(str(APP / "streamlit_app.py"), default_timeout=60)
+            at.run()
+            at.toggle(key="use_iwh").set_value(True).run()
+            self.assertFalse(at.exception, at.exception)
+            log = fake.raw_connection.log
+            self.assertIn("ALTER WAREHOUSE REFUND_LAB_IWH RESUME IF SUSPENDED", log)
+            self.assertIn("USE WAREHOUSE REFUND_LAB_IWH", log)
+            self.assertTrue(any("served by the interactive warehouse" in c.value
+                                for c in at.caption))
+            at.button(key="suspend_iwh").click().run()
+            self.assertFalse(at.exception, at.exception)
+            self.assertEqual(fake.raw_connection.state, "SUSPENDED")
+            self.assertFalse(at.toggle(key="use_iwh").value)
+            self.assertTrue(any("served by the standard warehouse" in c.value
+                                for c in at.caption))
 
 
 if __name__ == "__main__":

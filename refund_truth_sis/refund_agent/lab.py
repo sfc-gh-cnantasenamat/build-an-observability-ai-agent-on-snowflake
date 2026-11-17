@@ -319,16 +319,19 @@ class StreamingSink:
 
     One client and channel per table on its default ``<TABLE>-STREAMING`` pipe. Every
     row gets an increasing offset token; ``close()`` waits until the last token commits.
-    Credentials: a key-pair service identity (see sql/streaming_setup.sql); the private
-    key is read from disk and written only to a temporary 0600 profile file.
+    Credentials: a key-pair service identity (see sql/streaming_setup.sql). The private
+    key comes from a 0600 file (``private_key_path``) or, in the hosted app, from a
+    Snowflake secret (``private_key``); either way it's written only to a temporary 0600
+    profile file that ``close()`` removes.
     """
 
     name = "streaming"
     TABLES = ("RUNS", "TRACE_EVENTS", "LLM_CALLS")
 
-    def __init__(self, cohort: str, private_key_path: str,
+    def __init__(self, cohort: str, private_key_path: str | None = None,
                  user: str = "REFUND_LAB_STREAMER", role: str = "REFUND_LAB_STREAM_ROLE",
-                 account: str | None = None, client_factory=None):
+                 account: str | None = None, client_factory=None,
+                 private_key: str | None = None):
         import os
         import stat
         import tempfile
@@ -339,15 +342,21 @@ class StreamingSink:
         account = account or config.ACCOUNT
         if role.upper() in ADMIN_ROLES:
             raise ValueError("Streaming must use the lab's least-privilege service role, not an admin role")
-        key_file = Path(private_key_path).expanduser()
-        if key_file.stat().st_mode & 0o077:
-            raise PermissionError("Streaming private key must not be group/world readable")
+        if (private_key_path is None) == (private_key is None):
+            raise ValueError("Pass exactly one of private_key_path or private_key")
+        if private_key is None:
+            key_file = Path(private_key_path).expanduser()
+            if key_file.stat().st_mode & 0o077:
+                raise PermissionError("Streaming private key must not be group/world readable")
+            private_key = key_file.read_text()
+        if "PRIVATE KEY" not in private_key:
+            raise ValueError("The streaming private key must be a PEM private key")
         if client_factory is None:
             from snowflake.ingest.streaming import StreamingIngestClient
             client_factory = StreamingIngestClient
         profile = {"account": account, "user": user, "role": role,
                    "url": f"https://{account.lower().replace('_', '-')}.snowflakecomputing.com:443",
-                   "private_key": key_file.read_text()}
+                   "private_key": private_key}
         fd, self._profile = tempfile.mkstemp(suffix=".json")
         os.chmod(self._profile, stat.S_IRUSR | stat.S_IWUSR)
         with os.fdopen(fd, "w") as handle:

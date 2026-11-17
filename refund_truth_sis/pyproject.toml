@@ -16,4 +16,5 @@ dependencies = [
   "trulens-connectors-snowflake==2.7.1",
   "SQLAlchemy==2.0.49",
   "pandas>=2.2,<3",  # TruLens 2.7.1 client-side metrics fail on pandas 3
+  "snowpipe-streaming==1.9.2",
 ]
