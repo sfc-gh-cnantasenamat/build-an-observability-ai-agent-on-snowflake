@@ -202,3 +202,79 @@ class StreamingSinkTests(unittest.TestCase):
         from refund_agent.lab import StreamingSink
         with self.assertRaises(ValueError):
             StreamingSink(COHORT, "/nonexistent", role="accountadmin")
+
+
+class RestStreamingSinkTests(unittest.TestCase):
+    RUN = {"cohort_id": COHORT, "trial": 1, "run_id": "r1", "variant": "fixed",
+           "case_id": "C01_O01", "order_id": f"{COHORT}_O01",
+           "decision_at": "2026-11-08T12:00:00+00:00", "amount_cents": 100,
+           "order_total_cents": 100, "claim": "refunded", "attempted": True,
+           "tool_status": "posted", "ledger_effect_cents": 100, "agent_policy_id": "P",
+           "reply": "ok", "model_cost_credits": 0.0, "agent_latency_ms": 1.0,
+           "eligible": True, "observed_at": "2026-11-08T12:00:01+00:00",
+           "evidence": [{"policy_id": "P", "read_at": "x"}],
+           "llm_calls": [{"node": "decide", "model": "m", "input_tokens": 1,
+                          "output_tokens": 1, "latency_ms": 1, "est_credits": 0}]}
+
+    def fake(self, fail_append=False):
+        import json as _json
+
+        class Response:
+            def __init__(self, status=200, body=""):
+                self.status_code, self.text = status, body
+            def json(self):
+                return _json.loads(self.text)
+
+        class Http:
+            def __init__(self):
+                self.calls, self.committed = [], {}
+            def request(self, method, url, headers, timeout, params=None, data=None):
+                self.calls.append((method, url, params, data, headers))
+                assert timeout and headers["Authorization"] == "Bearer TOKEN"
+                if url.endswith("/v2/streaming/hostname"):
+                    return Response(body="ACCT_X.ingest.example")
+                if method == "PUT":
+                    return Response(body='{"next_continuation_token": "c0"}')
+                if url.endswith("/rows"):
+                    if fail_append:
+                        return Response(401, '{"code": "390422"}')
+                    self.committed[url.split("/pipes/")[1].split("-")[0]] = params["endOffsetToken"]
+                    assert "offsetToken" not in params
+                    return Response(body='{"next_continuation_token": "c1"}')
+                if url.endswith(":bulk-channel-status"):
+                    table = url.split("/pipes/")[1].split("-")[0]
+                    name = _json.loads(data)["channel_names"][0]
+                    return Response(body=_json.dumps({"channel_statuses": {name: {
+                        "channel_status_code": "SUCCESS",
+                        "last_committed_offset_token": self.committed.get(table)}}}))
+                return Response()
+        return Http()
+
+    def sink(self, http):
+        import os
+        import tempfile
+        from refund_agent.lab import RestStreamingSink
+        fd, path = tempfile.mkstemp(); os.write(fd, b"TOKEN\n"); os.close(fd)
+        self.addCleanup(os.remove, path)
+        return RestStreamingSink(COHORT, host="acct.snowflakecomputing.com", token_file=path, http=http)
+
+    def test_appends_each_run_per_table_and_waits_for_commit(self):
+        http = self.fake()
+        sink = self.sink(http)
+        self.assertEqual(sink.ingest, "acct-x.ingest.example")
+        sink.write(self.RUN)
+        sink.write({**self.RUN, "run_id": "r2"})
+        self.assertEqual(sink.close(), {"RUNS": 2, "TRACE_EVENTS": 6, "LLM_CALLS": 2})
+        appends = [c for c in http.calls if c[1].endswith("/rows")]
+        events = [c for c in appends if "/TRACE_EVENTS-STREAMING/" in c[1]]
+        self.assertTrue(all("/v2/streaming/data/databases/" in c[1] for c in appends))
+        self.assertEqual([(c[2]["startOffsetToken"], c[2]["endOffsetToken"]) for c in events],
+                         [("1", "3"), ("4", "6")])
+        self.assertEqual(events[0][4]["Content-Type"], "application/x-ndjson")
+        self.assertEqual(len(events[0][3].decode().splitlines()), 3)
+        self.assertEqual(sum(c[0] == "DELETE" for c in http.calls), 3)
+
+    def test_failed_request_raises_instead_of_retrying(self):
+        sink = self.sink(self.fake(fail_append=True))
+        with self.assertRaises(RuntimeError):
+            sink.write(self.RUN)

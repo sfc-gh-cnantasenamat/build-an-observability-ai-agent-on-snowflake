@@ -392,6 +392,100 @@ class StreamingSink:
         return dict(self.offsets)
 
 
+class RestStreamingSink:
+    """Streams each run's rows through the Snowpipe Streaming REST API (high-performance).
+
+    For a Streamlit app on container runtime. A container can't sign in with a customer
+    key pair, so this uses the container's own OAuth session token
+    (``/snowflake/session/token``) and streams as the app's owner role, over Snowflake's
+    internal network: no secret, network rule or external access integration. One named
+    channel per table on its default ``<TABLE>-STREAMING`` pipe; each run is one append
+    per table; ``close()`` waits until the last offset commits. Every request has a
+    timeout, so a failure raises instead of retrying forever.
+    """
+
+    name = "streaming"
+    TABLES = StreamingSink.TABLES
+    BASE = "/v2/streaming/databases/REFUND_AGENT_LAB/schemas/DEMO/pipes/{table}-STREAMING"
+
+    def __init__(self, cohort: str, host: str | None = None, token_file: str = "/snowflake/session/token",
+                 http=None, timeout_s: int = 30):
+        import os
+
+        if not valid_cohort(cohort):
+            raise ValueError("Invalid simulation ID")
+        if http is None:
+            import requests as http
+        self.http, self.timeout_s, self.token_file = http, timeout_s, token_file
+        self.host = host or os.environ["SNOWFLAKE_HOST"]
+        r = self._call("GET", f"https://{self.host}/v2/streaming/hostname")
+        self.ingest = r.text.strip().replace("_", "-").lower()
+        self.channels, self.tokens, self.offsets = {}, {}, {}
+        for table in self.TABLES:
+            channel = f"{cohort}_{table}"
+            r = self._call("PUT", self._url(table, f"/channels/{channel}"), data="{}")
+            self.channels[table], self.offsets[table] = channel, 0
+            self.tokens[table] = r.json()["next_continuation_token"]
+
+    def _headers(self) -> dict:
+        # Snowflake refreshes the container's token file every few minutes.
+        with open(self.token_file) as handle:
+            token = handle.read().strip()
+        return {"Authorization": f"Bearer {token}", "X-Snowflake-Authorization-Token-Type": "OAUTH",
+                "Content-Type": "application/json"}
+
+    def _url(self, table: str, path: str, data: bool = False) -> str:
+        # Appends go to /v2/streaming/data/...; channel and status calls don't have /data.
+        base = self.BASE.replace("/v2/streaming/", "/v2/streaming/data/") if data else self.BASE
+        return f"https://{self.ingest}" + base.format(table=table) + path
+
+    def _call(self, method: str, url: str, **kwargs):
+        headers = {**self._headers(), **kwargs.pop("headers", {})}
+        r = self.http.request(method, url, headers=headers, timeout=self.timeout_s, **kwargs)
+        if r.status_code >= 400:
+            raise RuntimeError(f"Snowpipe Streaming {method} {r.status_code}: {r.text[:300]}")
+        return r
+
+    def write(self, run: dict) -> None:
+        for table, rows in run_rows(run).items():
+            if not rows:
+                continue
+            start = self.offsets[table] + 1
+            self.offsets[table] += len(rows)
+            body = "".join(json.dumps(row, default=str) + "\n" for row in rows)
+            r = self._call("POST", self._url(table, f"/channels/{self.channels[table]}/rows", data=True),
+                           params={"continuationToken": self.tokens[table],
+                                   "startOffsetToken": str(start),
+                                   "endOffsetToken": str(self.offsets[table])},
+                           data=body.encode(), headers={"Content-Type": "application/x-ndjson"})
+            self.tokens[table] = r.json()["next_continuation_token"]
+
+    def close(self, timeout_seconds: int = 120) -> dict:
+        """Wait for every channel to commit its last offset, then drop it. Returns rows per table."""
+        import time
+
+        deadline = time.monotonic() + timeout_seconds
+        pending = {t for t, last in self.offsets.items() if last}
+        while pending:
+            for table in sorted(pending):
+                r = self._call("POST", self._url(table, ":bulk-channel-status"),
+                               data=json.dumps({"channel_names": [self.channels[table]]}))
+                status = r.json()["channel_statuses"].get(self.channels[table], {})
+                committed = status.get("last_committed_offset_token")
+                if status.get("channel_status_code") not in (None, "SUCCESS"):
+                    raise RuntimeError(f"{table} channel failed: {status.get('last_error_message')}")
+                if committed is not None and int(committed) >= self.offsets[table]:
+                    pending.discard(table)
+            if pending and time.monotonic() > deadline:
+                raise TimeoutError(f"Snowpipe Streaming did not commit {sorted(pending)} in time")
+            if pending:
+                time.sleep(1)
+        for table, channel in self.channels.items():
+            self._call("DELETE", self._url(table, f"/channels/{channel}"),
+                       data=json.dumps({"fail_on_uncommitted_rows": True}))
+        return dict(self.offsets)
+
+
 def simulate(conn, cohort: str, order_count: int, request_count: int,
              graphs: dict, sink: EventSink, agents: Iterable[str] = AGENT_NAMES,
              observers: Iterable = (),
