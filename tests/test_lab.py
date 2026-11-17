@@ -173,8 +173,7 @@ class StreamingSinkTests(unittest.TestCase):
                 self.channel = Channel(); return self.channel, "SUCCESS"
             def close(self): pass
 
-        fd, key = tempfile.mkstemp(); os.write(fd, b"-----BEGIN PRIVATE KEY-----"); os.close(fd)
-        os.chmod(key, 0o600)
+        fd, key = tempfile.mkstemp(); os.write(fd, b"KEY"); os.close(fd); os.chmod(key, 0o600)
         run = {"cohort_id": COHORT, "trial": 1, "run_id": "r1", "variant": "fixed",
                "case_id": "C01_O01", "order_id": f"{COHORT}_O01",
                "decision_at": "2026-11-08T12:00:00+00:00", "amount_cents": 100,
@@ -203,50 +202,3 @@ class StreamingSinkTests(unittest.TestCase):
         from refund_agent.lab import StreamingSink
         with self.assertRaises(ValueError):
             StreamingSink(COHORT, "/nonexistent", role="accountadmin")
-
-    def test_key_from_secret_string_goes_into_a_private_profile(self):
-        import json
-        import os
-        from refund_agent.lab import StreamingSink
-
-        seen = {}
-
-        class Client:
-            def __init__(self, client_name, db_name, schema_name, pipe_name, profile_json):
-                seen["mode"] = oct(os.stat(profile_json).st_mode & 0o777)
-                with open(profile_json) as handle:
-                    seen["key"] = json.load(handle)["private_key"]
-            def open_channel(self, channel_name):
-                raise RuntimeError("no network in tests")
-
-        pem = "-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----\n"
-        with self.assertRaises(RuntimeError):
-            StreamingSink(COHORT, private_key=pem, client_factory=Client)
-        self.assertEqual((seen["mode"], seen["key"]), ("0o600", pem))
-
-    def test_needs_exactly_one_pem_key_source(self):
-        from refund_agent.lab import StreamingSink
-        for kwargs in ({}, {"private_key_path": "/x", "private_key": "k"},
-                       {"private_key": "not a key"}):
-            with self.assertRaises(ValueError):
-                StreamingSink(COHORT, client_factory=object, **kwargs)
-
-
-class AppStreamingSetupTests(unittest.TestCase):
-    def test_egress_hosts_cover_account_ingest_and_stage_only(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "app_streaming_setup", Path(__file__).resolve().parents[1] / "scripts/app_streaming_setup.py")
-        setup = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(setup)
-        allowlist = [
-            {"type": "STREAMING_ROWSET", "host": "ACCT_X.abc.ingest.r1.snowflakecomputing.com", "port": 443},
-            {"type": "STAGE", "host": "bucket.s3.amazonaws.com", "port": 443},
-            {"type": "DUO_SECURITY", "host": "api.duosecurity.com", "port": 443},
-        ]
-        hosts = setup.egress_hosts(allowlist, "MYORG-MY_ACCOUNT")
-        self.assertIn("myorg-my-account.snowflakecomputing.com:443", hosts)
-        self.assertIn("acct-x.abc.ingest.r1.snowflakecomputing.com:443", hosts)
-        self.assertIn("bucket.s3.amazonaws.com:443", hosts)
-        self.assertFalse(any("duo" in h for h in hosts))
-        self.assertEqual(setup.sql_literal("a'b\\c"), "'a\\'b\\\\c'")

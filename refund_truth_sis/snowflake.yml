@@ -15,12 +15,10 @@ entities:
     external_access_integrations:
       - PYPI_ACCESS_INTEGRATION
       - REFUND_LAB_APP_EAI
-      - REFUND_LAB_STREAM_EAI
     secrets:
       langfuse_public_key: REFUND_AGENT_LAB.LANGFUSE.LF_INIT_PUBLIC_KEY
       langfuse_secret_key: REFUND_AGENT_LAB.LANGFUSE.LF_INIT_SECRET_KEY
       langfuse_host: REFUND_AGENT_LAB.LANGFUSE.LANGFUSE_HOST
-      streamer_private_key: REFUND_AGENT_LAB.DEMO.STREAMER_PRIVATE_KEY
     main_file: streamlit_app.py
     artifacts:
       - streamlit_app.py
