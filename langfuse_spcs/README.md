@@ -16,13 +16,7 @@ The finished setup has:
 - **Snowflake role:** ACCOUNTADMIN, or a role that can create roles, compute pools and grants.
 - **Docker:** Docker Desktop. On Apple Silicon the images are pulled as `linux/amd64`, the architecture SPCS runs.
 - **Snowflake CLI:** v3.x, with a connection named in `REFUND_LAB_CONNECTION`.
-- **Python 3.11** with `snowflake-connector-python`.
-- **Optional:** a separate virtual environment with `langfuse>=5,<6` and `requests`, for the verification step.
-
-```bash
-python3 -m venv .venv-langfuse
-.venv-langfuse/bin/pip install "langfuse>=5,<6" requests snowflake-connector-python
-```
+- **Python 3.11:** the lab's virtual environment, `.venv` (see the top-level README). It already has `snowflake-connector-python`, `langfuse` and `requests`, so every command below uses `.venv/bin/python`.
 
 ## Files
 
@@ -100,7 +94,7 @@ The script logs in with `snow spcs image-registry login`, then pulls, tags and p
 ## Step 3: Create the secrets
 
 ```bash
-python3 langfuse_spcs/create_secrets.py
+.venv/bin/python langfuse_spcs/create_secrets.py
 ```
 
 This generates 11 random values and stores each as a `GENERIC_STRING` secret named `REFUND_AGENT_LAB.LANGFUSE.LF_*`. It grants `READ` on them to `LANGFUSE_ROLE`.
@@ -122,7 +116,7 @@ Then update `~/.langfuse_spcs.env` to match.
 ## Step 4: Build the service specification
 
 ```bash
-python3 langfuse_spcs/build_spec.py
+.venv/bin/python langfuse_spcs/build_spec.py
 ```
 
 This writes `langfuse.yaml`. It's JSON, which is valid YAML, so it avoids YAML anchors, which SPCS may not support. It differs from docker-compose in these ways:
@@ -194,7 +188,7 @@ SELECT SYSTEM$GET_SERVICE_LOGS('REFUND_AGENT_LAB.LANGFUSE.LANGFUSE', 0, 'langfus
 Set `REFUND_LAB_LANGFUSE_HOST` to `https://<ingress_url>`, then run:
 
 ```bash
-.venv-langfuse/bin/python langfuse_spcs/verify.py
+.venv/bin/python langfuse_spcs/verify.py
 ```
 
 Expected output:
@@ -271,11 +265,11 @@ Turn the safeguard off or back on with `ALTER TASK REFUND_AGENT_LAB.LANGFUSE.LAN
 Langfuse creates the startup user only if it doesn't exist, so changing the secret alone does nothing. SPCS has no shell into a running container, so a temporary helper container deletes the user:
 
 ```bash
-python3 langfuse_spcs/build_spec.py --reset-user <email>   # adds a one-off psql container
+.venv/bin/python langfuse_spcs/build_spec.py --reset-user <email>   # adds a one-off psql container
 # PUT langfuse.yaml to the stage, then: CALL ...MANAGE_LANGFUSE('upgrade', 'https://<ingress_url>')
 # wait for the reset-user log to show "DELETE 1":
 #   SELECT SYSTEM$GET_SERVICE_LOGS('REFUND_AGENT_LAB.LANGFUSE.LANGFUSE', 0, 'reset-user', 20);
-python3 langfuse_spcs/build_spec.py                         # normal spec without the helper
+.venv/bin/python langfuse_spcs/build_spec.py                         # normal spec without the helper
 # PUT again, then upgrade again
 ```
 

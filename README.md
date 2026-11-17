@@ -24,6 +24,7 @@ source .refund_lab.env
 python3.11 -m venv .venv
 .venv/bin/pip install -r requirements-observer.txt -r requirements-streaming.txt
 .venv/bin/python -m unittest discover -s tests -t .      # no Snowflake calls
+.venv/bin/jupyter lab notebooks/refund_agent_lab.ipynb   # the notebook (start it after sourcing .refund_lab.env)
 .venv/bin/python scripts/run_simulation.py --scenarios    # live run: fixed scenario set, both observers
 .venv/bin/python scripts/run_simulation.py --eval         # optional: 300-run judge-alignment eval set
 ```
@@ -46,7 +47,7 @@ All three write to and read from **standard Snowflake tables**; nothing is copie
 - **Observers** (`src/refund_agent/observers.py`):
   - **TruLens** writes to Snowflake AI Observability, which computes `answer_relevance` and `groundedness` server-side. Scores are read through the `TRULENS_SCORES` view.
   - **Langfuse** is self-hosted on SPCS (see `langfuse_spcs/README.md`) and receives the same runs through LangChain's `CallbackHandler`. Its native LLM-as-a-judge evaluators score `answer_relevance` and `groundedness` on a `judge_input` step that carries the same facts TruLens sees. `LangfuseObserver.export` copies traces, Langfuse's cost per call and scores into `LANGFUSE_TRACES` and `LANGFUSE_SCORES`.
-  - **Judges and cost:** both tools judge with `openai-gpt-5.4-mini` on Cortex, a different model family from the Claude agents. Langfuse reaches Cortex through its OpenAI-compatible REST API with a scoped short-lived token (`langfuse_spcs/judge_access.sql`, `scripts/langfuse_judge_setup.py`, `scripts/langfuse_llm_connection.py`, `scripts/langfuse_native_evals.py`). Langfuse computes cost from Cortex credit rates registered by `scripts/langfuse_models.py`, which take precedence over Langfuse's built-in USD prices for the same model names; TruLens records a cost span for each model call.
+  - **Judges and cost:** both tools judge with `openai-gpt-5.4-mini` on Cortex, a different model family from the Claude agents. Langfuse reaches Cortex through its OpenAI-compatible REST API with a scoped short-lived token (`langfuse_spcs/judge_access.sql`, `scripts/rotate_judge_token.sh`, `scripts/langfuse_native_evals.py`). The token lasts 7 days; rerun `bash scripts/rotate_judge_token.sh` with Langfuse resumed to replace it in Snowflake and in Langfuse's Cortex connection. Langfuse computes cost from Cortex credit rates registered by `scripts/langfuse_models.py`, which take precedence over Langfuse's built-in USD prices for the same model names; TruLens records a cost span for each model call.
 - **Leaderboard** (`sql/leaderboard.sql`): runs on the interactive warehouse `REFUND_LAB_IWH` straight against the standard tables (no copies), with `REFUND_LAB_WAREHOUSE` as the fallback for statements over 5 seconds. The TruLens scores are joined separately on the standard warehouse, because they come from the AI Observability event table.
 - **Judge agreement** (`sql/judge_agreement.sql`): the `JUDGE_AGREEMENT` view treats each judge as a classifier: a score of 0.5 or more predicts "business-correct", and `BUSINESS_CORRECT` is the label. It reports the confusion counts, precision (of the runs a judge passed, how many were correct), recall, F1, agreement, Cohen's kappa and the false-pass rate, with 95% intervals, plus the score correlations Langfuse Score Analytics shows. `business_correct` is also copied into both tools as a reference score, so you can compare it there too (the TruLens metric needs `trulens-feedback` and pandas below 3).
 - **App** (`refund_truth_sis/`): Streamlit in Snowflake on container runtime, with three sections: Pick a winner (business truth hidden until revealed), Refund requests and Investigate. It streams with `RestStreamingSink` as its owner role (a container can't sign in with an outside key pair). A sidebar switch resumes `REFUND_LAB_IWH` to serve the leaderboard, with a Suspend button next to the caption that says which warehouse served it.
@@ -103,6 +104,7 @@ Cost is estimated from token counts at the published Cortex rates (Snowflake Ser
 
 - Langfuse runs on a compute pool. Resume it before a live run with `CALL REFUND_AGENT_LAB.LANGFUSE.MANAGE_LANGFUSE('resume','http://localhost:3000')`; an idle task suspends it after 30 minutes without traffic.
 - The interactive warehouse can't auto-suspend in under 24 hours, and each resume starts a new one-hour minimum charge. `scripts/run_simulation.py` and the notebook suspend it when they finish. The app resumes it only when you turn on its interactive warehouse switch; use the app's Suspend button, or `ALTER WAREHOUSE REFUND_LAB_IWH SUSPEND`.
+- The agents' Cortex calls are small: about 0.03 credits for the 30-run scenario set and 0.33 credits for the 300-run eval set in the verification runs, before judge calls.
 - The guide's Clean Up section drops everything the lab creates.
 
 ## Deploying the app

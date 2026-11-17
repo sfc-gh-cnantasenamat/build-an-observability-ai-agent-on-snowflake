@@ -19,3 +19,10 @@ CREATE OR REPLACE EXTERNAL ACCESS INTEGRATION REFUND_LAB_APP_EAI
                                     REFUND_AGENT_LAB.LANGFUSE.LANGFUSE_HOST)
   ENABLED = TRUE
   COMMENT = 'Refund lab app: Langfuse on SPCS (PyPI comes from PYPI_ACCESS_INTEGRATION)';
+
+-- The app installs its Python packages from PyPI. IF NOT EXISTS leaves an existing
+-- integration of this name alone; drop it in cleanup only if this script created it.
+CREATE EXTERNAL ACCESS INTEGRATION IF NOT EXISTS PYPI_ACCESS_INTEGRATION
+  ALLOWED_NETWORK_RULES = (SNOWFLAKE.EXTERNAL_ACCESS.PYPI_RULE)
+  ENABLED = TRUE
+  COMMENT = 'PyPI for Streamlit container runtime apps';
