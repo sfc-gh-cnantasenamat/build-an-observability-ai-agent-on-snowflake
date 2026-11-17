@@ -12,7 +12,7 @@ langfuse_spcs/langfuse.yaml
 # Internal working files, not part of the guide
 legacy/
 notebooks/remote-*/
-notebooks/refund_agent_lab.ipynb
+notebooks/refund_agent_lab_draft.ipynb
 dashboards/
 docs/
 AGENTS.md

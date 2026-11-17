@@ -50,7 +50,7 @@ All three write to and read from **standard Snowflake tables**; nothing is copie
 - **Leaderboard** (`sql/leaderboard.sql`): runs on the interactive warehouse `REFUND_LAB_IWH` straight against the standard tables (no copies), with `REFUND_LAB_WAREHOUSE` as the fallback for statements over 5 seconds. The TruLens scores are joined separately on the standard warehouse, because they come from the AI Observability event table.
 - **Judge agreement** (`sql/judge_agreement.sql`): the `JUDGE_AGREEMENT` view treats each judge as a classifier: a score of 0.5 or more predicts "business-correct", and `BUSINESS_CORRECT` is the label. It reports the confusion counts, precision (of the runs a judge passed, how many were correct), recall, F1, agreement, Cohen's kappa and the false-pass rate, with 95% intervals, plus the score correlations Langfuse Score Analytics shows. `business_correct` is also copied into both tools as a reference score, so you can compare it there too (the TruLens metric needs `trulens-feedback` and pandas below 3).
 - **App** (`refund_truth_sis/`): Streamlit in Snowflake on container runtime, with three sections: Pick a winner (business truth hidden until revealed), Refund requests and Investigate. It streams with `RestStreamingSink` as its owner role (a container can't sign in with an outside key pair). A sidebar switch resumes `REFUND_LAB_IWH` to serve the leaderboard, with a Suspend button next to the caption that says which warehouse served it.
-- **Notebook** (`notebooks/refund_agent_lab_v2.ipynb`): the same steps as the guide, plus a TruLens vs Langfuse comparison and cleanup.
+- **Notebook** (`notebooks/refund_agent_lab.ipynb`): the same steps as the guide, plus a TruLens vs Langfuse comparison and cleanup.
 
 ## Example results
 
