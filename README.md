@@ -94,6 +94,20 @@ Precision flatters every judge here: 246 of 300 runs are correct, so a judge tha
 | TruLens groundedness | 0 of 12 | 18 of 18 | 22 of 24 |
 | Langfuse groundedness | 0 of 12 | 18 of 18 | 22 of 24 |
 
+#### Larger judges
+
+The eval set was rerun with larger judges, set with `REFUND_LAB_JUDGE_MODEL` (default `openai-gpt-5.4-mini`). Each rerun had the same 246 correct and 54 wrong runs:
+
+| Groundedness judge | Tool | Wrong runs caught | Stale-policy refunds passed | Kappa |
+| --- | --- | --- | --- | --- |
+| `openai-gpt-5.4-mini` | TruLens | 14 of 54 | 18 of 18 | 0.26 [0.08, 0.44] |
+| `openai-gpt-5.4` | TruLens | 16 of 54 | 18 of 18 | 0.35 [0.17, 0.52] |
+| `openai-gpt-6-astra` | TruLens | 16 of 54 | 18 of 18 | 0.32 [0.14, 0.50] |
+| `openai-gpt-5.4-mini` | Langfuse | 14 of 54 | 18 of 18 | 0.36 [0.17, 0.54] |
+| `openai-gpt-5.4` | Langfuse | 15 of 54 | 18 of 18 | 0.38 [0.20, 0.56] |
+
+The intervals overlap, and every judge passes all 18 stale-policy refunds. The mini judge performs about as well at a fraction of the cost per call. Langfuse can't use `openai-gpt-6-astra`: Cortex rejects tool calls for it on `/v1/chat/completions`, which Langfuse's evaluators need. To compare a judge in Langfuse, switch it with `REFUND_LAB_JUDGE_MODEL` set, rerun `langfuse_llm_connection.py` and `langfuse_native_evals.py` (and `langfuse_models.py` for its price), then rerun both scripts without it to switch back.
+
 ### What each signal picks
 
 On the eval set, every signal except business truth ranks a broken agent above Fixed:
@@ -101,7 +115,7 @@ On the eval set, every signal except business truth ranks a broken agent above F
 - **Cost:** Lean, at about a fifteenth of the others' cost per request.
 - **Self-reported success:** Lean (61%) and Baseline (62%) above Fixed (50%), which is the only agent that's always right.
 - **Latency:** barely separates the agents; Lean's smaller model was slower per call here (about 1.8 to 2.1 s against 1.5 s).
-- **Groundedness:** catches every reply that contradicts the facts, such as Baseline's false "refunded". It passes nearly every action that was wrong but described accurately: a refund under an out-of-date policy, or the wrong amount refunded. About 1 in 7 runs it passes is wrong, and most of those are Lean's, so Lean looks good on every common signal.
+- **Groundedness:** catches every reply that contradicts the facts, such as Baseline's false "refunded". It passes nearly every action that was wrong but described accurately: a refund under an out-of-date policy, or the wrong amount refunded. About 1 in 7 runs it passes is wrong, and most of those are Lean's, so Lean, the cheapest agent, also gets past the judges.
 - **Answer relevance:** close to chance in both tools.
 - **Business truth:** only it picks Fixed and shows the money at risk.
 
