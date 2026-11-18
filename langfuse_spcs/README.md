@@ -105,7 +105,7 @@ The values are never printed. A copy goes to `~/.langfuse_spcs.env` (mode 600) a
 
 The script refuses to overwrite an existing file.
 
-**The UI password must contain letters, digits and a special character.** Langfuse rejects anything weaker. The generator in `create_secrets.py` uses only letters and digits, so append a symbol or set a stronger value before the first deploy:
+**The UI password must contain letters, digits and a special character.** Langfuse rejects anything weaker. The generator in `create_secrets.py` only sometimes includes a symbol (`-` or `_`), so append one or set a stronger value before the first deploy:
 
 ```sql
 ALTER SECRET REFUND_AGENT_LAB.LANGFUSE.LF_INIT_USER_PASSWORD SET SECRET_STRING = '<strong password>';
