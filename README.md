@@ -71,14 +71,23 @@ Thirty runs are enough to see each flaw, but too few to rank judges: Langfuse gr
 
 ### Eval set (88 orders, 100 requests per agent, 300 runs)
 
-`run_simulation.py --eval` sends the same scenario kinds, varied within each kind, to every agent. Business truth: Fixed 100 of 100 correct, Baseline 76 (12 false replies on declined cards, 12 whole-order refunds), Lean 70 (18 stale-policy refunds, 12 whole-order refunds). Each judge is scored as a classifier against business truth, with 95% intervals:
+`run_simulation.py --eval` sends the same scenario kinds, varied within each kind, to every agent. Business truth: Fixed 100 of 100 correct, Baseline 76 (12 false replies on declined cards, 12 whole-order refunds), Lean 70 (18 stale-policy refunds, 12 whole-order refunds). Each judge is scored as a classifier against business truth. The question that matters is how many of the 54 wrong runs each judge caught:
 
-| Judge | Precision | Recall | F1 | Kappa | Wrong runs passed |
-| --- | --- | --- | --- | --- | --- |
-| Langfuse groundedness | 0.86 [0.82, 0.90] | 1.00 | 0.92 | 0.36 [0.17, 0.54] | 40 of 54 |
-| TruLens groundedness | 0.85 [0.81, 0.89] | 0.95 | 0.90 | 0.26 [0.08, 0.44] | 40 of 54 |
-| TruLens answer relevance | 0.85 [0.80, 0.89] | 0.90 | 0.87 | 0.20 [0.02, 0.37] | 39 of 54 |
-| Langfuse answer relevance | 0.82 [0.77, 0.86] | 0.95 | 0.88 | -0.04 [-0.26, 0.19] | 53 of 54 |
+| Judge | Wrong runs caught | Wrong runs passed | Kappa |
+| --- | --- | --- | --- |
+| Langfuse groundedness | 14 of 54 (26%) | 40 | 0.36 [0.17, 0.54] |
+| TruLens groundedness | 14 of 54 (26%) | 40 | 0.26 [0.08, 0.44] |
+| TruLens answer relevance | 15 of 54 (28%) | 39 | 0.20 [0.02, 0.37] |
+| Langfuse answer relevance | 1 of 54 (2%) | 53 | -0.04 [-0.26, 0.19] |
+
+Precision flatters every judge here: 246 of 300 runs are correct, so a judge that passes everything scores 0.82. All four land between 0.82 and 0.86.
+
+| Judge | Precision | Recall | F1 |
+| --- | --- | --- | --- |
+| Langfuse groundedness | 0.86 [0.82, 0.90] | 1.00 | 0.92 |
+| TruLens groundedness | 0.85 [0.81, 0.89] | 0.95 | 0.90 |
+| TruLens answer relevance | 0.85 [0.80, 0.89] | 0.90 | 0.87 |
+| Langfuse answer relevance | 0.82 [0.77, 0.86] | 0.95 | 0.88 |
 
 | Judge | False replies passed | Stale refunds passed | Whole-order refunds passed |
 | --- | --- | --- | --- |
@@ -90,7 +99,7 @@ Thirty runs are enough to see each flaw, but too few to rank judges: Langfuse gr
 On the eval set, every signal except business truth ranks a broken agent above Fixed:
 
 - **Cost:** Lean, at about a fifteenth of the others' cost per request.
-- **Self-reported success:** Lean (49%) and Baseline (50%), tied, above Fixed (38%), which is the only agent that's always right.
+- **Self-reported success:** Lean (61%) and Baseline (62%) above Fixed (50%), which is the only agent that's always right.
 - **Latency:** barely separates the agents; Lean's smaller model was slower per call here (about 1.8 to 2.1 s against 1.5 s).
 - **Groundedness:** catches every reply that contradicts the facts, such as Baseline's false "refunded". It passes nearly every action that was wrong but described accurately: a refund under an out-of-date policy, or the wrong amount refunded. About 1 in 7 runs it passes is wrong, and most of those are Lean's, so Lean looks good on every common signal.
 - **Answer relevance:** close to chance in both tools.
