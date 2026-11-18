@@ -19,6 +19,7 @@ from refund_agent.observers import JUDGE_MODEL
 HOST = config.LANGFUSE_HOST
 # The judge's rate (AI_COMPLETE, Table 6(a), Service Consumption Table effective 2026-11-12).
 JUDGE_RATE = {"openai-gpt-5.4-mini": (0.45, 2.70),  # credits per 1M tokens
+              "openai-gpt-5.4": (1.38, 8.25),  # not yet checked against Table 6(a)
               "openai-gpt-6-astra": (6.00, 30.00)}
 assert JUDGE_MODEL in JUDGE_RATE, f"add {JUDGE_MODEL}'s rate to JUDGE_RATE"
 
