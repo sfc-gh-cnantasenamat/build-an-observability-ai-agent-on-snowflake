@@ -13,6 +13,7 @@ Cortex through its OpenAI-compatible REST API (see scripts/langfuse_native_evals
 from __future__ import annotations
 
 import json
+import os
 
 from trulens.otel.semconv.trace import SpanAttributes
 
@@ -22,7 +23,7 @@ TRULENS_APP = "REFUND_AGENT_LAB"
 TRULENS_METRICS = ("answer_relevance", "groundedness")
 # One Cortex judge model for both observers, so their scores are comparable. It's from
 # a different family than the agents (Claude) so the judge isn't grading its own family.
-JUDGE_MODEL = "openai-gpt-5.4-mini"
+JUDGE_MODEL = os.environ.get("REFUND_LAB_JUDGE_MODEL", "openai-gpt-5.4-mini")  # override to compare judges
 # Langfuse's native evaluators reach Cortex through this LLM connection
 # (scripts/langfuse_llm_connection.py) and score every observation with this name and
 # metadata lab_step
